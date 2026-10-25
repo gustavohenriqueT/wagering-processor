@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  aws:
+    image: ministackorg/ministack@sha256:c3afdc0f5a5147477b0634cbe2d2ebb032079989a52c8a1e1e59aea7413feb78
+    ports:
+      - "4566:4566"
+
+volumes:
+  postgres_data:
