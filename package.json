@@ -1,0 +1,21 @@
+{
+  "name": "wagering-processor",
+  "private": true,
+  "scripts": {
+    "dev": "bun --watch src/main.ts",
+    "start": "bun src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@nestjs/common": "^X.Y.Z",
+    "@nestjs/core": "^X.Y.Z",
+    "@nestjs/platform-express": "^X.Y.Z",
+    "reflect-metadata": "^X.Y.Z",
+    "rxjs": "^X.Y.Z"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "^X.Y.Z"
+  }
+}
