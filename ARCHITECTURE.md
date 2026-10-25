@@ -69,3 +69,21 @@ Cada item abaixo deve virar uma decisão registrada acima, no mesmo dia em que f
 - **Por quê:** o enunciado exige que unicidade, imutabilidade e não-negatividade estejam no schema do banco. Triggers, índices únicos parciais e `CHECK`s com aritmética não são bem expressos por geração automática. O SQL explícito dá controle total sobre essas garantias e deixa o schema revisável.
 - **Reversibilidade:** o `down()` do MikroORM lança erro por padrão, então cada migration implementa o próprio `down()`, desfazendo as mudanças na ordem inversa das dependências. A reversibilidade foi verificada subindo, descendo e subindo de novo. Cada migration roda dentro de uma transação.
 - **Trade-off:** o SQL é escrito e mantido manualmente, e o schema pode divergir do mapeamento das entidades se uma das partes for alterada sem a outra. Os testes de integração contra um Postgres real servem de proteção contra isso.
+
+### Dx. Representação interna do `Money`: centavos em `bigint`
+
+- **Escolha:** guardar o valor como inteiro de centavos (`bigint`), em vez de usar uma biblioteca de decimais.
+- **Por quê:** a aritmética com inteiros é exata (0.10 + 0.20 resulta em 0.30) e não exige dependência. A escala fixa de 2 casas do enunciado encaixa naturalmente. O limite de 17 dígitos inteiros acompanha a coluna `numeric(19,2)`, para que um valor inválido seja rejeitado pelo domínio e não estoure no banco.
+- **Trade-off:** o modelo assume 2 casas decimais para toda moeda. Moedas com 0 ou 3 casas (JPY, BHD) exigiriam escala por moeda. `Money.from(m.toJSON())` falha para valores negativos de propósito, porque negativos são rejeitados em contratos de entrada, embora `subtract` e `negate` possam produzir negativos internamente.
+
+### Dy. Interpretação: `amount` exige exatamente duas casas decimais
+
+- **Contexto:** o enunciado diz que `amount` é recebido "sempre com escala fixa de 2 casas", mas lista só "mais de 2 casas" entre as entradas inválidas.
+- **Interpretação adotada:** a entrada exige exatamente duas casas. `"25"` e `"25.5"` são rejeitados, e `"25.00"` é aceito.
+- **Motivo:** segue a leitura literal da escala fixa e evita corrigir em silêncio dados financeiros inconsistentes de um provedor.
+- **Trade-off:** um provedor que envie `"25"` terá a requisição rejeitada, em vez de tolerada.
+
+### Dz. Interpretação: `equals` entre moedas diferentes devolve `false`
+
+- **Escolha:** `Money.equals` devolve `false` quando as moedas diferem. `add`, `subtract` e `isLessThan` entre moedas diferentes lançam `DomainError` com código `CURRENCY_MISMATCH`.
+- **Motivo:** `equals` é uma comparação (a resposta "não são iguais" existe), enquanto as demais são operações que calculam, e calcular entre moedas sem câmbio não tem resultado correto.
