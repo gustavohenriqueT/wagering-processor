@@ -52,3 +52,20 @@ Cada item abaixo deve virar uma decisão registrada acima, no mesmo dia em que f
 - **Como o banco garante:** índice único parcial em `wager_transactions (reference_transaction_id) WHERE status = 'PROCESSED' AND kind IN ('REFUND','ROLLBACK')`. Só conta o status `PROCESSED`, para que uma tentativa rejeitada (por exemplo, com valor diferente) não bloqueie a tentativa correta que vier depois.
 - **Consequência no código:** a violação de unicidade (código `23505` do Postgres) deve ser capturada e convertida em `REJECTED` com um `failureCode` próprio, e não virar erro 500.
 - **Trade-off:** é uma leitura mais estrita que a regra 4 isolada. Se o provedor precisar de `REFUND` e `ROLLBACK` sobre a mesma aposta, essa regra terá que ser revista.
+
+### Dx. MikroORM com entidades sem decorators
+
+- **Escolha:** usar o MikroORM (v7) com entidades definidas por arquivos de schema, **sem decorators**, mantendo as classes de domínio independentes da camada de persistência.
+- **Por quê:**
+  - **Domínio puro:** o enunciado exige classes de domínio com construtor privado e método `rehydrate`. Prefiro que elas representem apenas regras de negócio, sem depender de biblioteca de banco de dados. O mapeamento entre domínio e persistência fica em arquivos de schema separados.
+  - **Compatibilidade com Bun:** o Bun apenas transpila TypeScript e há relatos de que nem sempre aplica o `emitDecoratorMetadata`. Na injeção de dependência do NestJS, o caso simples funcionou no Bun 1.4.4 nos meus testes, mas evito depender desse mecanismo também na camada de persistência.
+  - **Manutenção:** separação clara entre domínio, persistência e migrations, o que deixa o código mais testável e previsível.
+- **Trade-off:** definir cada entidade em um arquivo de schema é mais verboso do que anotar a classe com decorators. Também há mais código de mapeamento entre o domínio e o schema.
+- **Alternativas consideradas:** MikroORM com decorators (reintroduz a dependência de metadados no Bun) e TypeORM (no Bun exigiria declarar o tipo de cada coluna explicitamente, e o MikroORM é o ORM preferencial do enunciado).
+
+### Dy. Migrations escritas em SQL
+
+- **Escolha:** escrever as migrations à mão, em SQL, executadas pelo migrator do MikroORM (`up` e `down`), e não geradas por diferença de schema.
+- **Por quê:** o enunciado exige que unicidade, imutabilidade e não-negatividade estejam no schema do banco. Triggers, índices únicos parciais e `CHECK`s com aritmética não são bem expressos por geração automática. O SQL explícito dá controle total sobre essas garantias e deixa o schema revisável.
+- **Reversibilidade:** o `down()` do MikroORM lança erro por padrão, então cada migration implementa o próprio `down()`, desfazendo as mudanças na ordem inversa das dependências. A reversibilidade foi verificada subindo, descendo e subindo de novo. Cada migration roda dentro de uma transação.
+- **Trade-off:** o SQL é escrito e mantido manualmente, e o schema pode divergir do mapeamento das entidades se uma das partes for alterada sem a outra. Os testes de integração contra um Postgres real servem de proteção contra isso.

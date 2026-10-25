@@ -5,9 +5,16 @@
     "dev": "bun --watch src/main.ts",
     "start": "bun src/main.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "migrate:up": "bun scripts/migrate.ts up",
+    "migrate:down": "bun scripts/migrate.ts down",
+    "migrate:status": "bun scripts/migrate.ts status"
+    
   },
   "dependencies": {
+    "@mikro-orm/core": "^7.2.5",
+    "@mikro-orm/migrations": "^7.2.5",
+    "@mikro-orm/postgresql": "^7.2.5",
     "@nestjs/common": "^X.Y.Z",
     "@nestjs/core": "^X.Y.Z",
     "@nestjs/platform-express": "^X.Y.Z",
