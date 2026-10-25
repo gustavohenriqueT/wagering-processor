@@ -5,7 +5,7 @@ export interface MoneyProps {
 	currency: string;
 }
 
-const AMOUNT_PATTERN = /^(\d{1,17})(?:\.(\d{1,2}))?$/;
+const AMOUNT_PATTERN = /^(\d{1,17})\.(\d{2})$/;
 const CURRENCY_PATTERN = /^[A-Z]{3}$/;
 
 export class Money {
@@ -93,13 +93,13 @@ export class Money {
 		}
 		const match = AMOUNT_PATTERN.exec(amount);
 		const whole = match?.[1];
-		if (whole === undefined) {
+        const fraction = match?.[2];
+		if (whole === undefined || fraction === undefined) {
 			throw new DomainError(
 				"INVALID_MONEY_AMOUNT",
 				`amount inválido: ${JSON.stringify(amount)}`,
 			);
 		}
-		const fraction = (match?.[2] ?? "").padEnd(2, "0");
 		return BigInt(whole) * 100n + BigInt(fraction);
 	}
 
