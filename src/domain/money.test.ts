@@ -124,4 +124,13 @@ describe("comparações", () => {
 		expect(brl("2.00").equals(brl("2.00"))).toBe(true);
 		expect(brl("2.00").equals(brl("2.01"))).toBe(false);
 	});
+
+	test("equals entre moedas diferentes devolve false (não lança)", () => {
+		expect(brl("2.00").equals(usd("2.00"))).toBe(false);
+	});
+
+	test('entrada permissiva: "25" e "25.5" são normalizados para 2 casas', () => {
+		expect(brl("25").toJSON().amount).toBe("25.00");
+		expect(brl("25.5").toJSON().amount).toBe("25.50");
+	});
 });
