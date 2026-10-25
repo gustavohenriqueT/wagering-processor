@@ -44,4 +44,11 @@ Cada item abaixo deve virar uma decisão registrada acima, no mesmo dia em que f
 
 ## Limitações conhecidas
 
-(ainda nao cheguei nessa parte)
+### Dx. Interpretação: uma referência só pode ser revertida uma vez
+
+- **Contexto:** a regra 4 do enunciado diz que uma referência não pode ser revertida duas vezes "pelo mesmo tipo de operação". A tabela da seção 7 diz que `REFUND` e `ROLLBACK` revertem "uma única vez".
+- **Interpretação adotada:** uma transação de referência só pode ter **uma** reversão efetivada (`PROCESSED`), seja `REFUND` ou `ROLLBACK`.
+- **Motivo:** permitir um `REFUND` e também um `ROLLBACK` sobre a mesma `BET` creditaria o jogador duas vezes.
+- **Como o banco garante:** índice único parcial em `wager_transactions (reference_transaction_id) WHERE status = 'PROCESSED' AND kind IN ('REFUND','ROLLBACK')`. Só conta o status `PROCESSED`, para que uma tentativa rejeitada (por exemplo, com valor diferente) não bloqueie a tentativa correta que vier depois.
+- **Consequência no código:** a violação de unicidade (código `23505` do Postgres) deve ser capturada e convertida em `REJECTED` com um `failureCode` próprio, e não virar erro 500.
+- **Trade-off:** é uma leitura mais estrita que a regra 4 isolada. Se o provedor precisar de `REFUND` e `ROLLBACK` sobre a mesma aposta, essa regra terá que ser revista.
