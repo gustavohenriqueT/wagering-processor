@@ -1,5 +1,5 @@
 import { DomainError } from "./errors/domain-error";
-import type { Money } from "./money/money";
+import type { Money } from "./money";
 
 export enum LedgerDirection {
 	Debit = "DEBIT",
@@ -33,6 +33,7 @@ export class WalletLedgerEntry {
 		Object.freeze(this);
 	}
 
+	/** Valida o lançamento. Use para lançamentos novos. */
 	static create(props: CreateLedgerEntryProps): WalletLedgerEntry {
 		if (!props.money.isPositive()) {
 			throw new DomainError(
@@ -57,10 +58,12 @@ export class WalletLedgerEntry {
 		return entry;
 	}
 
+	/** Reconstrução a partir da persistência. Não revalida: apenas reconstrói o estado salvo. */
 	static rehydrate(state: LedgerEntryState): WalletLedgerEntry {
 		return WalletLedgerEntry.build(state);
 	}
 
+	/** balanceBefore ± money === balanceAfter. */
 	isBalanced(): boolean {
 		const expected =
 			this.direction === LedgerDirection.Debit

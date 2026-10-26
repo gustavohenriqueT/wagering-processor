@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { DomainError } from "./errors/domain-error";
-import { Money } from "./money/money";
+import { Money } from "./money";
 import { LedgerDirection, WalletLedgerEntry } from "./wallet-ledger-entry";
 
 const brl = (amount: string): Money => Money.from({ amount, currency: "BRL" });

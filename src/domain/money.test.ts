@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { DomainError } from "../../src/domain/errors/domain-error";
-import { Money } from "../../src/domain/money/money";
+import { DomainError } from "./errors/domain-error";
+import { Money } from "./money";
 
 const brl = (amount: string): Money => Money.from({ amount, currency: "BRL" });
 const usd = (amount: string): Money => Money.from({ amount, currency: "USD" });
