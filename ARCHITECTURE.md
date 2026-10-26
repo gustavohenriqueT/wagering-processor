@@ -86,6 +86,20 @@ Reescreva com suas palavras: na apresentação, quem explica é você.
 - `reject` e `fail` não definem `processedAt` (consistente com `ck_processed_at`).
 - `checkReference(reference)` devolve o `FailureCode` ou `undefined`. Ordem das checagens: tipo da referência, contexto (provider, player, wallet, rodada, moeda), status `PROCESSED`, valor igual. A regra "já revertida" depende do banco e fica no caso de uso, sustentada por `uq_one_processed_reversal`.
 
+### Dx. Persistência com SQL explícito sobre o MikroORM
+
+- **Escolha:** o MikroORM fornece conexão, transação (`em.transactional`) e migrations; as consultas são SQL explícito via `em.execute`, atrás de interfaces (`ports.ts`) que o caso de uso consome.
+- **Por quê:** `SELECT ... FOR UPDATE`, índices parciais e controle exato dos tipos monetários ficam visíveis e revisáveis; o caso de uso nunca depende de SQL.
+- **Tipos na fronteira:** `numeric` e `bigint` chegam como string; timestamps são formatados em ISO-8601 pelo próprio SQL; cada coluna é validada ao mapear (falha alta se o tipo for inesperado).
+- **Trade-off:** mais código de mapeamento que usar entidades.
+
+### Dx. Concorrência: lock pessimista por wallet
+
+- **Escolha:** `SELECT ... FOR UPDATE` na linha da wallet no início de cada transação SQL, mais `UPDATE ... WHERE version = ?` como guarda.
+- **Por quê:** a unidade de concorrência é a `walletId`; a segunda operação espera o commit da primeira e lê o saldo atualizado. Wallets diferentes não se bloqueiam, e o lock está no banco, então vale para qualquer número de instâncias. Não depende da ordenação do broker.
+- **Trade-off:** uma wallet muito disputada serializa as operações. A alternativa otimista (retry em conflito de `version`) gera tempestade de retries sob disputa alta e dificulta garantir que nenhum retry duplique o débito.
+- **Evidência:** teste de integração que mostra a segunda leitura vendo `20.00` com lock e `100.00` sem lock.
+
 ## Decisões pendentes (exigidas pelo enunciado)
 
 - [ ] Estratégia de concorrência (lock pessimista, otimista ou update atômico) e justificativa
