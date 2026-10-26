@@ -35,7 +35,7 @@ Se qualquer passo falha, **nada** é gravado. O evento só é publicado **depois
 
 ## 2. Ambiente e stack
 
-**Repositório próprio e privado, sem fork.** O repositório do desafio é público e tem dezenas de forks; um fork de repositório público é sempre público e exporia a solução. O enunciado fica em `CHALLENGE.md`. Trade-off: o avaliador precisa receber acesso como colaborador.
+***Repositório próprio, sem fork.** O repositório do desafio é público e tem dezenas de forks; um fork de repositório público é sempre público e exporia a solução durante o desenvolvimento. Por isso o trabalho foi feito num repositório novo, mantido privado enquanto eu desenvolvia e aberto para a avaliação, para garantir o acesso do time. O enunciado fica em `CHALLENGE.md`.
 
 **MiniStack no lugar do LocalStack.** Desde março de 2026 a imagem do LocalStack exige conta e auth token para iniciar. O MiniStack é open source, usa a mesma porta (4566) e o enunciado aceita os dois. Trade-off: é mais novo, e o comportamento de algumas funções do SQS pode divergir da AWS real. A imagem está **fixada por digest** no `docker-compose.yml`, para que o resultado não mude entre execuções.
 
