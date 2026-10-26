@@ -2,6 +2,7 @@ import type { MikroORM } from "@mikro-orm/postgresql";
 import type { UnitOfWork, UnitOfWorkContext } from "../../application/ports";
 import { SqlDb } from "./sql-db";
 import {
+	SqlInboxRepository,
 	SqlLedgerRepository,
 	SqlOutboxRepository,
 	SqlWagerTransactionRepository,
@@ -19,6 +20,7 @@ export class SqlUnitOfWork implements UnitOfWork {
 				transactions: new SqlWagerTransactionRepository(db),
 				ledger: new SqlLedgerRepository(db),
 				outbox: new SqlOutboxRepository(db),
+				inbox: new SqlInboxRepository(db),
 			});
 		});
 	}

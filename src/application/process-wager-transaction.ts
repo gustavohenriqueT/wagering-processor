@@ -4,7 +4,7 @@ import type { Money } from "../domain/money";
 import {
 	WagerTransaction,
 	type WagerTransactionKind,
-	type WagerTransactionStatus,
+	WagerTransactionStatus,
 } from "../domain/wager-transaction";
 import type { Wallet } from "../domain/wallet";
 import { LedgerDirection } from "../domain/wallet-ledger-entry";
@@ -37,6 +37,7 @@ export interface ProcessWagerTransactionCommand {
 	referenceExternalTransactionId?: string;
 	correlationId: string;
 	causationId?: string;
+	inbox?: { consumerName: string; messageId: string };
 }
 
 export interface ProcessWagerTransactionResult {
@@ -45,6 +46,39 @@ export interface ProcessWagerTransactionResult {
 	failureCode?: FailureCode;
 	balance: Money;
 	idempotentReplay: boolean;
+	replayedBy?: "idempotency-key" | "inbox";
+}
+
+export interface PendingReferencePolicy {
+	maxAttempts: number;
+	baseDelayMs: number;
+	maxDelayMs: number;
+	ttlMs: number;
+}
+
+export const DEFAULT_PENDING_POLICY: PendingReferencePolicy = {
+	maxAttempts: 10,
+	baseDelayMs: 2_000,
+	maxDelayMs: 300_000,
+	ttlMs: 3_600_000,
+};
+
+export function pendingBackoffMs(
+	policy: PendingReferencePolicy,
+	attempts: number,
+): number {
+	return Math.min(policy.baseDelayMs * 2 ** attempts, policy.maxDelayMs);
+}
+
+interface Scope {
+	context: UnitOfWorkContext;
+	wallet: Wallet;
+	transaction: WagerTransaction;
+	now: Date;
+	correlationId: string;
+	causationId?: string;
+	mode: "new" | "pending";
+	pendingAttempts: number;
 }
 
 export class ProcessWagerTransaction {
@@ -52,6 +86,7 @@ export class ProcessWagerTransaction {
 		private readonly uow: UnitOfWork,
 		private readonly clock: () => Date = () => new Date(),
 		private readonly newId: () => string = () => crypto.randomUUID(),
+		private readonly pendingPolicy: PendingReferencePolicy = DEFAULT_PENDING_POLICY,
 	) {}
 
 	async execute(
@@ -72,6 +107,41 @@ export class ProcessWagerTransaction {
 		}
 	}
 
+	reprocessPending(
+		transactionId: string,
+	): Promise<ProcessWagerTransactionResult | undefined> {
+		return this.uow.run(async (context) => {
+			const preview = await context.transactions.findById(transactionId);
+			if (
+				preview === undefined ||
+				preview.transaction.status !== WagerTransactionStatus.PendingReference
+			) {
+				return undefined;
+			}
+			// Lock da wallet e releitura: outro worker pode ter decidido enquanto esperávamos o lock.
+			const wallet = await context.wallets.lockById(
+				preview.transaction.walletId,
+			);
+			const stored = await context.transactions.findById(transactionId);
+			if (
+				wallet === undefined ||
+				stored === undefined ||
+				stored.transaction.status !== WagerTransactionStatus.PendingReference
+			) {
+				return undefined;
+			}
+			return this.applyRules({
+				context,
+				wallet,
+				transaction: stored.transaction,
+				now: this.clock(),
+				correlationId: `pending-reference:${transactionId}`,
+				mode: "pending",
+				pendingAttempts: stored.pendingAttempts,
+			});
+		});
+	}
+
 	private async processInTransaction(
 		context: UnitOfWorkContext,
 		command: ProcessWagerTransactionCommand,
@@ -82,13 +152,34 @@ export class ProcessWagerTransaction {
 		if (wallet === undefined) {
 			throw new WalletNotFoundError(command.walletId);
 		}
-		// 2. Idempotência (já sob o lock, então não há corrida dentro da mesma wallet).
+		const now = this.clock();
+
+		// 2. Inbox (só para SQS): a mensagem é registrada na mesma transação do processamento.
+		if (command.inbox !== undefined) {
+			const firstDelivery = await context.inbox.register(
+				command.inbox.consumerName,
+				command.inbox.messageId,
+				payloadHash,
+				now,
+			);
+			if (!firstDelivery) {
+				const already = await context.transactions.findByIdempotencyKey(
+					command.providerId,
+					command.idempotencyKey,
+				);
+				if (already !== undefined) {
+					return this.replay(already, payloadHash, wallet, "inbox");
+				}
+			}
+		}
+
+		// 3. Idempotência (já sob o lock, então não há corrida dentro da mesma wallet).
 		const existing = await context.transactions.findByIdempotencyKey(
 			command.providerId,
 			command.idempotencyKey,
 		);
 		if (existing !== undefined) {
-			return this.replay(existing, payloadHash, wallet);
+			return this.replay(existing, payloadHash, wallet, "idempotency-key");
 		}
 		const reused = await context.transactions.findByExternalId(
 			command.providerId,
@@ -100,8 +191,8 @@ export class ProcessWagerTransaction {
 				`externalTransactionId ${command.externalTransactionId} já foi usado com outra Idempotency-Key`,
 			);
 		}
-		// 3. Nova transação.
-		const now = this.clock();
+
+		// 4. Nova transação.
 		const transaction = WagerTransaction.create({
 			id: this.newId(),
 			providerId: command.providerId,
@@ -117,7 +208,18 @@ export class ProcessWagerTransaction {
 			referenceExternalTransactionId: command.referenceExternalTransactionId,
 			createdAt: now,
 		});
-		const scope: Scope = { context, command, wallet, transaction, now };
+		const scope: Scope = {
+			context,
+			wallet,
+			transaction,
+			now,
+			correlationId: command.correlationId,
+			...(command.causationId === undefined
+				? {}
+				: { causationId: command.causationId }),
+			mode: "new",
+			pendingAttempts: 0,
+		};
 
 		if (command.playerId !== wallet.playerId) {
 			return this.reject(scope, FailureCode.PlayerMismatch);
@@ -125,12 +227,22 @@ export class ProcessWagerTransaction {
 		if (command.money.currency !== wallet.currency) {
 			return this.reject(scope, FailureCode.CurrencyMismatch);
 		}
-		// 4. LOSS: registra o resultado sem mexer em saldo nem ledger.
+		return this.applyRules(scope);
+	}
+
+	/** Regras de negócio por tipo. Serve tanto para transações novas quanto para as pendentes. */
+	private async applyRules(
+		scope: Scope,
+	): Promise<ProcessWagerTransactionResult> {
+		const { context, wallet, transaction, now } = scope;
+
+		// LOSS: registra o resultado sem mexer em saldo nem ledger.
 		if (!transaction.affectsBalance()) {
 			transaction.markProcessed(undefined, now);
 			return this.persistWithoutLedger(scope);
 		}
-		// 5. Reversões: resolver e validar a referência.
+
+		// Reversões: resolver e validar a referência.
 		let reference: WagerTransaction | undefined;
 		if (transaction.requiresReference()) {
 			const referenceExternalId = transaction.referenceExternalTransactionId;
@@ -138,11 +250,11 @@ export class ProcessWagerTransaction {
 				throw new DomainError("REFERENCE_REQUIRED", "reversão sem referência");
 			}
 			const stored = await context.transactions.findByExternalId(
-				command.providerId,
+				transaction.providerId,
 				referenceExternalId,
 			);
 			if (stored === undefined) {
-				return this.pendingReference(scope, referenceExternalId);
+				return this.onMissingReference(scope);
 			}
 			reference = stored.transaction;
 
@@ -154,11 +266,12 @@ export class ProcessWagerTransaction {
 				return this.reject(scope, FailureCode.AlreadyReversed);
 			}
 		}
-		// 6. Movimentar o saldo (a Wallet valida tudo antes de mutar).
+
+		// Movimentar o saldo (a Wallet valida tudo antes de mutar).
 		const previousVersion = wallet.version;
 		const direction = transaction.ledgerDirectionFor(reference);
 		const movement = {
-			money: command.money,
+			money: transaction.money,
 			entryId: this.newId(),
 			transactionId: transaction.id,
 			at: now,
@@ -171,6 +284,7 @@ export class ProcessWagerTransaction {
 					: wallet.credit(movement);
 		} catch (error) {
 			if (error instanceof DomainError && error.code === "INSUFFICIENT_FUNDS") {
+				// Aposta sem saldo e reversão que estouraria o saldo são situações operacionais diferentes.
 				return this.reject(
 					scope,
 					transaction.requiresReference()
@@ -180,9 +294,10 @@ export class ProcessWagerTransaction {
 			}
 			throw error;
 		}
-		// 7. Persistir tudo, na mesma transação SQL.
+
+		// Persistir tudo, na mesma transação SQL.
 		transaction.markProcessed(reference?.id, now);
-		await context.transactions.insert(transaction, wallet.balance);
+		await this.save(scope, wallet.balance);
 		await context.ledger.insert(entry);
 		await context.wallets.save(wallet, previousVersion);
 		await context.outbox.add(
@@ -208,10 +323,66 @@ export class ProcessWagerTransaction {
 		return this.result(transaction, wallet.balance, false);
 	}
 
+	/** Transação nova: insere. Transação pendente: atualiza a decisão. */
+	private save(
+		scope: Scope,
+		observedBalance: Money,
+		schedule?: { attempts: number; nextAttemptAt: Date },
+	): Promise<void> {
+		const { context, transaction } = scope;
+		return scope.mode === "new"
+			? context.transactions.insert(transaction, observedBalance, schedule)
+			: context.transactions.updateDecision(transaction, observedBalance);
+	}
+
+	private async onMissingReference(
+		scope: Scope,
+	): Promise<ProcessWagerTransactionResult> {
+		const { context, wallet, transaction, now } = scope;
+
+		if (scope.mode === "new") {
+			transaction.markPendingReference();
+			await this.save(scope, wallet.balance, {
+				attempts: 0,
+				nextAttemptAt: new Date(
+					now.getTime() + pendingBackoffMs(this.pendingPolicy, 0),
+				),
+			});
+			await context.outbox.add(
+				new WagerTransactionPendingReference({
+					...this.eventProps(scope),
+					data: {
+						...this.refs(transaction),
+						referenceExternalTransactionId:
+							transaction.referenceExternalTransactionId ?? "",
+					},
+				}),
+			);
+			return this.result(transaction, wallet.balance, false);
+		}
+
+		const attempts = scope.pendingAttempts + 1;
+		const ageMs = now.getTime() - transaction.createdAt.getTime();
+		if (
+			attempts >= this.pendingPolicy.maxAttempts ||
+			ageMs >= this.pendingPolicy.ttlMs
+		) {
+			return this.reject(scope, FailureCode.ReferenceNotFound);
+		}
+		await context.transactions.schedulePendingRetry(transaction.id, {
+			attempts,
+			nextAttemptAt: new Date(
+				now.getTime() + pendingBackoffMs(this.pendingPolicy, attempts),
+			),
+		});
+		return this.result(transaction, wallet.balance, false);
+	}
+
 	private replay(
 		existing: StoredWagerTransaction,
 		payloadHash: string,
 		wallet: Wallet,
+		replayedBy: "idempotency-key" | "inbox",
 	): ProcessWagerTransactionResult {
 		if (!existing.transaction.matchesPayload(payloadHash)) {
 			throw new IdempotencyConflictError(
@@ -219,18 +390,22 @@ export class ProcessWagerTransaction {
 				`a Idempotency-Key ${existing.transaction.idempotencyKey} já foi usada com outro payload`,
 			);
 		}
-		return this.result(
-			existing.transaction,
-			existing.observedBalance ?? wallet.balance,
-			true,
-		);
+		return {
+			...this.result(
+				existing.transaction,
+				existing.observedBalance ?? wallet.balance,
+				true,
+			),
+			replayedBy,
+		};
 	}
+
 	/** Transação processada que não move saldo (LOSS): sem ledger e sem WalletBalanceChanged. */
 	private async persistWithoutLedger(
 		scope: Scope,
 	): Promise<ProcessWagerTransactionResult> {
 		const { context, wallet, transaction } = scope;
-		await context.transactions.insert(transaction, wallet.balance);
+		await this.save(scope, wallet.balance);
 		await context.outbox.add(
 			new WagerTransactionProcessed({
 				...this.eventProps(scope),
@@ -246,7 +421,7 @@ export class ProcessWagerTransaction {
 	): Promise<ProcessWagerTransactionResult> {
 		const { context, wallet, transaction } = scope;
 		transaction.reject(code);
-		await context.transactions.insert(transaction, wallet.balance);
+		await this.save(scope, wallet.balance);
 		await context.outbox.add(
 			new WagerTransactionRejected({
 				...this.eventProps(scope),
@@ -254,25 +429,6 @@ export class ProcessWagerTransaction {
 					...this.refs(transaction),
 					failureCode: code,
 					balance: wallet.balance.toJSON(),
-				},
-			}),
-		);
-		return this.result(transaction, wallet.balance, false);
-	}
-
-	private async pendingReference(
-		scope: Scope,
-		referenceExternalId: string,
-	): Promise<ProcessWagerTransactionResult> {
-		const { context, wallet, transaction } = scope;
-		transaction.markPendingReference();
-		await context.transactions.insert(transaction, wallet.balance);
-		await context.outbox.add(
-			new WagerTransactionPendingReference({
-				...this.eventProps(scope),
-				data: {
-					...this.refs(transaction),
-					referenceExternalTransactionId: referenceExternalId,
 				},
 			}),
 		);
@@ -310,19 +466,11 @@ export class ProcessWagerTransaction {
 		return {
 			eventId: this.newId(),
 			aggregateId: scope.wallet.id,
-			correlationId: scope.command.correlationId,
-			...(scope.command.causationId === undefined
+			correlationId: scope.correlationId,
+			...(scope.causationId === undefined
 				? {}
-				: { causationId: scope.command.causationId }),
+				: { causationId: scope.causationId }),
 			occurredAt: scope.now,
 		};
 	}
-}
-
-interface Scope {
-	context: UnitOfWorkContext;
-	command: ProcessWagerTransactionCommand;
-	wallet: Wallet;
-	transaction: WagerTransaction;
-	now: Date;
 }

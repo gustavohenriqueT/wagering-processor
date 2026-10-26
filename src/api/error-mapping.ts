@@ -1,7 +1,10 @@
 import { HttpException } from "@nestjs/common";
+import { isTransientInfrastructureError } from "../application/db-errors";
 import { IdempotencyConflictError } from "../application/errors";
 import { DomainError } from "../domain/errors/domain-error";
 import { ValidationError } from "./errors";
+
+export { isTransientInfrastructureError };
 
 export interface ApiError {
 	status: number;
@@ -23,49 +26,6 @@ const DOMAIN_STATUS: Record<string, number> = {
 	WALLET_ALREADY_EXISTS: 409,
 	IDEMPOTENCY_CONFLICT: 409,
 };
-
-const TRANSIENT_CODES = new Set([
-	"ECONNREFUSED",
-	"ECONNRESET",
-	"ETIMEDOUT",
-	"57P01",
-	"57P03",
-	"53300",
-	"40001",
-	"40P01",
-	"55P03",
-	"08000",
-	"08001",
-	"08003",
-	"08006",
-]);
-
-export function isTransientInfrastructureError(error: unknown): boolean {
-	if (typeof error !== "object" || error === null) {
-		return false;
-	}
-	const candidate = error as {
-		code?: unknown;
-		message?: unknown;
-		errors?: unknown;
-	};
-	if (
-		typeof candidate.code === "string" &&
-		TRANSIENT_CODES.has(candidate.code)
-	) {
-		return true;
-	}
-	if (
-		Array.isArray(candidate.errors) &&
-		candidate.errors.some(isTransientInfrastructureError)
-	) {
-		return true;
-	}
-	return (
-		typeof candidate.message === "string" &&
-		/timeout exceeded when trying to connect/i.test(candidate.message)
-	);
-}
 
 export function mapError(error: unknown): ApiError {
 	if (error instanceof ValidationError) {

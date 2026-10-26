@@ -1,7 +1,10 @@
 import type { IntegrationEvent } from "../../application/events/integration-event";
 import type {
+	InboxRepository,
 	LedgerRepository,
+	OutboxRecord,
 	OutboxRepository,
+	PendingSchedule,
 	StoredWagerTransaction,
 	WagerTransactionRepository,
 	WalletRepository,
@@ -95,7 +98,8 @@ function toWallet(row: Row): Wallet {
 const TRANSACTION_COLUMNS = `id, provider_id, external_transaction_id, idempotency_key, payload_hash,
   wallet_id, player_id, round_id, game_id, kind, amount, currency,
   reference_external_transaction_id, reference_transaction_id, status, failure_code,
-  observed_balance, ${iso("created_at")} as created_at, ${iso("processed_at")} as processed_at`;
+  observed_balance, pending_attempts::int AS pending_attempts,
+  ${iso("created_at")} as created_at, ${iso("processed_at")} as processed_at`;
 
 export class SqlWagerTransactionRepository
 	implements WagerTransactionRepository
@@ -105,15 +109,16 @@ export class SqlWagerTransactionRepository
 	async insert(
 		transaction: WagerTransaction,
 		observedBalance: Money | undefined,
+		schedule?: PendingSchedule,
 	): Promise<void> {
 		await this.db.exec(
 			`INSERT INTO wager_transactions
          (id, provider_id, external_transaction_id, idempotency_key, payload_hash,
           wallet_id, player_id, round_id, game_id, kind, amount, currency,
           reference_external_transaction_id, reference_transaction_id, status, failure_code,
-          observed_balance, created_at, processed_at)
+          observed_balance, created_at, processed_at, pending_attempts, next_attempt_at)
        VALUES (?::uuid, ?, ?, ?, ?, ?::uuid, ?, ?, ?, ?, ?::numeric, ?, ?, ?::uuid, ?, ?,
-               ?::numeric, ?::timestamptz, ?::timestamptz)`,
+               ?::numeric, ?::timestamptz, ?::timestamptz, ?, ?::timestamptz)`,
 			[
 				transaction.id,
 				transaction.providerId,
@@ -134,8 +139,57 @@ export class SqlWagerTransactionRepository
 				observedBalance?.toJSON().amount ?? null,
 				transaction.createdAt.toISOString(),
 				transaction.processedAt?.toISOString() ?? null,
+				schedule?.attempts ?? 0,
+				schedule?.nextAttemptAt.toISOString() ?? null,
 			],
 		);
+	}
+
+	async updateDecision(
+		transaction: WagerTransaction,
+		observedBalance: Money | undefined,
+	): Promise<void> {
+		const affected = await this.db.exec(
+			`UPDATE wager_transactions
+          SET status = ?, failure_code = ?, reference_transaction_id = ?::uuid,
+              observed_balance = ?::numeric, processed_at = ?::timestamptz, next_attempt_at = NULL
+        WHERE id = ?::uuid AND status = 'PENDING_REFERENCE'`,
+			[
+				transaction.status,
+				transaction.failureCode ?? null,
+				transaction.referenceTransactionId ?? null,
+				observedBalance?.toJSON().amount ?? null,
+				transaction.processedAt?.toISOString() ?? null,
+				transaction.id,
+			],
+		);
+		if (affected !== 1) {
+			throw new Error(
+				`transação ${transaction.id} não estava mais em PENDING_REFERENCE`,
+			);
+		}
+	}
+
+	async schedulePendingRetry(
+		transactionId: string,
+		schedule: PendingSchedule,
+	): Promise<void> {
+		await this.db.exec(
+			`UPDATE wager_transactions SET pending_attempts = ?, next_attempt_at = ?::timestamptz
+        WHERE id = ?::uuid AND status = 'PENDING_REFERENCE'`,
+			[schedule.attempts, schedule.nextAttemptAt.toISOString(), transactionId],
+		);
+	}
+
+	async listDuePendingReference(now: Date, limit: number): Promise<string[]> {
+		const rows = await this.db.query(
+			`SELECT id FROM wager_transactions
+        WHERE status = 'PENDING_REFERENCE' AND (next_attempt_at IS NULL OR next_attempt_at <= ?::timestamptz)
+        ORDER BY created_at
+        LIMIT ?`,
+			[now.toISOString(), limit],
+		);
+		return rows.map((row) => text(row, "id"));
 	}
 
 	findById(id: string): Promise<StoredWagerTransaction | undefined> {
@@ -221,6 +275,7 @@ function toStoredTransaction(row: Row): StoredWagerTransaction {
 			observed === undefined
 				? undefined
 				: Money.from({ amount: observed, currency }),
+		pendingAttempts: int(row, "pending_attempts"),
 	};
 }
 
@@ -261,5 +316,78 @@ export class SqlOutboxRepository implements OutboxRepository {
 				event.occurredAt.toISOString(),
 			],
 		);
+	}
+
+	async claimPending(now: Date, limit: number): Promise<OutboxRecord[]> {
+		const rows = await this.db.query(
+			`SELECT o.id, o.aggregate_id, o.event_type, o.payload::text AS payload, o.attempts
+         FROM outbox_messages o
+        WHERE o.published_at IS NULL
+          AND (o.next_attempt_at IS NULL OR o.next_attempt_at <= ?::timestamptz)
+          AND NOT EXISTS (
+            SELECT 1 FROM outbox_messages earlier
+             WHERE earlier.aggregate_id = o.aggregate_id
+               AND earlier.published_at IS NULL
+               AND earlier.seq < o.seq)
+        ORDER BY o.seq
+        LIMIT ?
+        FOR UPDATE OF o SKIP LOCKED`,
+			[now.toISOString(), limit],
+		);
+		return rows.map((row) => ({
+			id: text(row, "id"),
+			aggregateId: text(row, "aggregate_id"),
+			eventType: text(row, "event_type"),
+			payload: text(row, "payload"),
+			attempts: int(row, "attempts"),
+		}));
+	}
+
+	async markPublished(id: string, at: Date): Promise<void> {
+		await this.db.exec(
+			"UPDATE outbox_messages SET published_at = ?::timestamptz, attempts = attempts + 1 WHERE id = ?::uuid",
+			[at.toISOString(), id],
+		);
+	}
+
+	async markFailed(id: string, nextAttemptAt: Date): Promise<void> {
+		await this.db.exec(
+			"UPDATE outbox_messages SET attempts = attempts + 1, next_attempt_at = ?::timestamptz WHERE id = ?::uuid",
+			[nextAttemptAt.toISOString(), id],
+		);
+	}
+
+	async oldestPendingAgeSeconds(): Promise<number | undefined> {
+		const rows = await this.db.query(
+			`SELECT EXTRACT(EPOCH FROM (now() - MIN(occurred_at)))::float8 AS lag
+         FROM outbox_messages WHERE published_at IS NULL`,
+		);
+		const lag = rows[0]?.lag;
+		return typeof lag === "number" ? lag : undefined;
+	}
+}
+
+export class SqlInboxRepository implements InboxRepository {
+	constructor(private readonly db: SqlDb) {}
+
+	async register(
+		consumerName: string,
+		messageId: string,
+		payloadHash: string,
+		at: Date,
+	): Promise<boolean> {
+		const inserted = await this.db.exec(
+			`INSERT INTO inbox_messages (consumer_name, message_id, payload_hash, received_at, processed_at)
+       VALUES (?, ?, ?, ?::timestamptz, ?::timestamptz)
+       ON CONFLICT (consumer_name, message_id) DO NOTHING`,
+			[
+				consumerName,
+				messageId,
+				payloadHash,
+				at.toISOString(),
+				at.toISOString(),
+			],
+		);
+		return inserted === 1;
 	}
 }
