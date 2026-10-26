@@ -35,6 +35,7 @@ export interface ProcessWagerTransactionCommand {
 	kind: WagerTransactionKind;
 	money: Money;
 	referenceExternalTransactionId?: string;
+	/** Metadados de transporte: não entram no payloadHash. */
 	correlationId: string;
 	causationId?: string;
 }
@@ -43,6 +44,7 @@ export interface ProcessWagerTransactionResult {
 	transactionId: string;
 	status: WagerTransactionStatus;
 	failureCode?: FailureCode;
+	/** Saldo observado quando a transação foi decidida (em replay, o original). */
 	balance: Money;
 	idempotentReplay: boolean;
 }
@@ -63,6 +65,8 @@ export class ProcessWagerTransaction {
 				this.processInTransaction(context, command, payloadHash),
 			);
 		} catch (error) {
+			// Corrida entre unicidades (ex.: mesma key em wallets diferentes): a transação perdedora
+			// foi desfeita; refaz UMA vez, e agora enxerga o vencedor como replay ou conflito.
 			if (uniqueViolation(error) !== undefined) {
 				return this.uow.run((context) =>
 					this.processInTransaction(context, command, payloadHash),
@@ -77,11 +81,13 @@ export class ProcessWagerTransaction {
 		command: ProcessWagerTransactionCommand,
 		payloadHash: string,
 	): Promise<ProcessWagerTransactionResult> {
+		// 1. Lock da wallet: a partir daqui, tudo para esta wallet é serializado.
 		const wallet = await context.wallets.lockById(command.walletId);
 		if (wallet === undefined) {
 			throw new WalletNotFoundError(command.walletId);
 		}
 
+		// 2. Idempotência (já sob o lock, então não há corrida dentro da mesma wallet).
 		const existing = await context.transactions.findByIdempotencyKey(
 			command.providerId,
 			command.idempotencyKey,
@@ -100,6 +106,7 @@ export class ProcessWagerTransaction {
 			);
 		}
 
+		// 3. Nova transação.
 		const now = this.clock();
 		const transaction = WagerTransaction.create({
 			id: this.newId(),
@@ -125,11 +132,13 @@ export class ProcessWagerTransaction {
 			return this.reject(scope, FailureCode.CurrencyMismatch);
 		}
 
+		// 4. LOSS: registra o resultado sem mexer em saldo nem ledger.
 		if (!transaction.affectsBalance()) {
 			transaction.markProcessed(undefined, now);
 			return this.persistWithoutLedger(scope);
 		}
 
+		// 5. Reversões: resolver e validar a referência.
 		let reference: WagerTransaction | undefined;
 		if (transaction.requiresReference()) {
 			const referenceExternalId = transaction.referenceExternalTransactionId;
@@ -154,6 +163,7 @@ export class ProcessWagerTransaction {
 			}
 		}
 
+		// 6. Movimentar o saldo (a Wallet valida tudo antes de mutar).
 		const previousVersion = wallet.version;
 		const direction = transaction.ledgerDirectionFor(reference);
 		const movement = {
@@ -162,7 +172,6 @@ export class ProcessWagerTransaction {
 			transactionId: transaction.id,
 			at: now,
 		};
-
 		let entry;
 		try {
 			entry =
@@ -171,6 +180,7 @@ export class ProcessWagerTransaction {
 					: wallet.credit(movement);
 		} catch (error) {
 			if (error instanceof DomainError && error.code === "INSUFFICIENT_FUNDS") {
+				// Aposta sem saldo e reversão que estouraria o saldo são situações operacionais diferentes.
 				return this.reject(
 					scope,
 					transaction.requiresReference()
@@ -181,6 +191,7 @@ export class ProcessWagerTransaction {
 			throw error;
 		}
 
+		// 7. Persistir tudo, na mesma transação SQL.
 		transaction.markProcessed(reference?.id, now);
 		await context.transactions.insert(transaction, wallet.balance);
 		await context.ledger.insert(entry);
@@ -226,6 +237,7 @@ export class ProcessWagerTransaction {
 		);
 	}
 
+	/** Transação processada que não move saldo (LOSS): sem ledger e sem WalletBalanceChanged. */
 	private async persistWithoutLedger(
 		scope: Scope,
 	): Promise<ProcessWagerTransactionResult> {

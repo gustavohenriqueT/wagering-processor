@@ -12,6 +12,7 @@ export class SqlUnitOfWork implements UnitOfWork {
 	constructor(private readonly orm: MikroORM) {}
 
 	run<T>(work: (context: UnitOfWorkContext) => Promise<T>): Promise<T> {
+		// fork(): cada unidade de trabalho tem o seu próprio EntityManager e a sua própria conexão.
 		return this.orm.em.fork().transactional(async (em) => {
 			const db = new SqlDb(em);
 			return work({

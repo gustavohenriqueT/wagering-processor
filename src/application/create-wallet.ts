@@ -43,6 +43,7 @@ export class CreateWallet {
 					await wallets.insert(wallet);
 
 					if (command.initialBalance.isPositive()) {
+						// Saldo inicial vira uma transação interna OPENING + lançamento CREDIT, na MESMA transação SQL.
 						const opening = WagerTransaction.create({
 							id: this.newId(),
 							providerId: OPENING_PROVIDER,

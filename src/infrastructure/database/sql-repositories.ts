@@ -138,6 +138,10 @@ export class SqlWagerTransactionRepository
 		);
 	}
 
+	findById(id: string): Promise<StoredWagerTransaction | undefined> {
+		return this.findOne("id = ?::uuid", [id]);
+	}
+
 	findByIdempotencyKey(
 		providerId: string,
 		key: string,

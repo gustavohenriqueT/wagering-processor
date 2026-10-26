@@ -2,13 +2,16 @@ import type { SqlEntityManager } from "@mikro-orm/postgresql";
 
 export type Row = Record<string, unknown>;
 
+/** Fatia mínima do EntityManager que os repositórios precisam. */
 export class SqlDb {
 	constructor(private readonly em: SqlEntityManager) {}
 
+	/** Executa um SELECT (ou INSERT ... RETURNING) e devolve as linhas. Placeholders: `?`. */
 	async query(sql: string, params: unknown[] = []): Promise<Row[]> {
 		return (await this.em.execute(sql, params)) as Row[];
 	}
 
+	/** Executa INSERT/UPDATE/DELETE e devolve quantas linhas foram afetadas. */
 	async exec(sql: string, params: unknown[] = []): Promise<number> {
 		const result = (await this.em.execute(sql, params, "run")) as {
 			affectedRows?: number;
@@ -17,6 +20,7 @@ export class SqlDb {
 	}
 }
 
+/** Timestamps saem do banco já em ISO-8601 (o driver devolveria texto no formato do Postgres). */
 export const iso = (column: string): string =>
 	`to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
 
@@ -51,6 +55,7 @@ export function optionalDate(row: Row, key: string): Date | undefined {
 	return value === undefined ? undefined : new Date(value);
 }
 
+/** Converte o texto vindo do banco para o enum, falhando alto se for um valor desconhecido. */
 export function enumValue<E extends string>(
 	enumObject: Record<string, E>,
 	value: string,

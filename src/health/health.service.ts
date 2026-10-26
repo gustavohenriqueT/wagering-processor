@@ -1,8 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable } from "@nestjs/common";
 
 @Injectable()
 export class HealthService {
-  live(): { status: 'ok' } {
-    return { status: 'ok' };
-  }
+	live(): { status: "ok" } {
+		return { status: "ok" };
+	}
 }

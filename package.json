@@ -6,7 +6,6 @@
     "start": "bun src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test src",
-    "test:unit": "bun test tests/unit",
     "test:integration": "bun test test/integration",
     "test:all": "bun test src test/integration",
     "migrate:up": "bun scripts/migrate.ts up",

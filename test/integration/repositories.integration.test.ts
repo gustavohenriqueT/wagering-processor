@@ -241,9 +241,9 @@ describe("lock por wallet (FOR UPDATE)", () => {
 			await wallets.save(wallet, 1);
 		});
 
-		await sleep(100);
+		await sleep(100); // garante que a primeira já pegou o lock
 		const second = uow.run(async ({ wallets }) => {
-			const wallet = await wallets.lockById(id);
+			const wallet = await wallets.lockById(id); // bloqueia até a primeira commitar
 			secondSaw = wallet?.balance.toJSON().amount;
 		});
 

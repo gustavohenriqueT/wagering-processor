@@ -4,6 +4,7 @@ import type { Wallet } from "../domain/wallet";
 import type { WalletLedgerEntry } from "../domain/wallet-ledger-entry";
 import type { IntegrationEvent } from "./events/integration-event";
 
+/** Transação já persistida, com o saldo observado no momento em que foi decidida. */
 export interface StoredWagerTransaction {
 	transaction: WagerTransaction;
 	observedBalance: Money | undefined;
@@ -11,7 +12,9 @@ export interface StoredWagerTransaction {
 
 export interface WalletRepository {
 	insert(wallet: Wallet): Promise<void>;
+	/** SELECT ... FOR UPDATE: bloqueia a linha até o fim da transação SQL. */
 	lockById(walletId: string): Promise<Wallet | undefined>;
+	/** Persiste saldo e version. Falha se a version no banco não for `expectedVersion`. */
 	save(wallet: Wallet, expectedVersion: number): Promise<void>;
 }
 
@@ -20,6 +23,7 @@ export interface WagerTransactionRepository {
 		transaction: WagerTransaction,
 		observedBalance: Money | undefined,
 	): Promise<void>;
+	findById(id: string): Promise<StoredWagerTransaction | undefined>;
 	findByIdempotencyKey(
 		providerId: string,
 		key: string,
@@ -36,9 +40,11 @@ export interface LedgerRepository {
 }
 
 export interface OutboxRepository {
+	/** Grava o evento na outbox, na mesma transação SQL do restante. */
 	add(event: IntegrationEvent<unknown>): Promise<void>;
 }
 
+/** Tudo que um caso de uso pode tocar dentro de UMA transação SQL. */
 export interface UnitOfWorkContext {
 	wallets: WalletRepository;
 	transactions: WagerTransactionRepository;
@@ -47,5 +53,6 @@ export interface UnitOfWorkContext {
 }
 
 export interface UnitOfWork {
+	/** Roda `work` em uma transação SQL: commit se resolver, rollback se lançar. */
 	run<T>(work: (context: UnitOfWorkContext) => Promise<T>): Promise<T>;
 }
