@@ -8,8 +8,9 @@ import {
 	type OnApplicationShutdown,
 	type Provider,
 } from "@nestjs/common";
-import { APP_FILTER } from "@nestjs/core";
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ApiExceptionFilter } from "./api/api-exception.filter";
+import { AuthGuard } from './api/auth.guard';
 import { Metrics } from "./api/metrics";
 import { MetricsController } from "./api/metrics.controller";
 import { ReadinessService } from "./api/readiness.service";
@@ -134,6 +135,7 @@ export class AppModule {
 					inject: [UNIT_OF_WORK],
 				},
 				{ provide: APP_FILTER, useClass: ApiExceptionFilter },
+        { provide: APP_GUARD, useClass: AuthGuard },
 				...messagingProviders,
 			],
 		};
