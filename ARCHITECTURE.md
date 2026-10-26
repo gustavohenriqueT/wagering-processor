@@ -86,19 +86,34 @@ Reescreva com suas palavras: na apresentação, quem explica é você.
 - `reject` e `fail` não definem `processedAt` (consistente com `ck_processed_at`).
 - `checkReference(reference)` devolve o `FailureCode` ou `undefined`. Ordem das checagens: tipo da referência, contexto (provider, player, wallet, rodada, moeda), status `PROCESSED`, valor igual. A regra "já revertida" depende do banco e fica no caso de uso, sustentada por `uq_one_processed_reversal`.
 
-### Dx. Persistência com SQL explícito sobre o MikroORM
+### D16. Persistência com SQL explícito sobre o MikroORM
 
 - **Escolha:** o MikroORM fornece conexão, transação (`em.transactional`) e migrations; as consultas são SQL explícito via `em.execute`, atrás de interfaces (`ports.ts`) que o caso de uso consome.
 - **Por quê:** `SELECT ... FOR UPDATE`, índices parciais e controle exato dos tipos monetários ficam visíveis e revisáveis; o caso de uso nunca depende de SQL.
 - **Tipos na fronteira:** `numeric` e `bigint` chegam como string; timestamps são formatados em ISO-8601 pelo próprio SQL; cada coluna é validada ao mapear (falha alta se o tipo for inesperado).
 - **Trade-off:** mais código de mapeamento que usar entidades.
 
-### Dx. Concorrência: lock pessimista por wallet
+### D17. Concorrência: lock pessimista por wallet
 
 - **Escolha:** `SELECT ... FOR UPDATE` na linha da wallet no início de cada transação SQL, mais `UPDATE ... WHERE version = ?` como guarda.
 - **Por quê:** a unidade de concorrência é a `walletId`; a segunda operação espera o commit da primeira e lê o saldo atualizado. Wallets diferentes não se bloqueiam, e o lock está no banco, então vale para qualquer número de instâncias. Não depende da ordenação do broker.
 - **Trade-off:** uma wallet muito disputada serializa as operações. A alternativa otimista (retry em conflito de `version`) gera tempestade de retries sob disputa alta e dificulta garantir que nenhum retry duplique o débito.
 - **Evidência:** teste de integração que mostra a segunda leitura vendo `20.00` com lock e `100.00` sem lock.
+
+### D18. Idempotência e `payloadHash`
+
+- **Algoritmo:** SHA-256 (hex) do JSON canônico (chaves ordenadas recursivamente, sem espaços, `undefined` omitido) dos campos de negócio: `providerId`, `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`, `kind`, `money` e `referenceExternalTransactionId` (null quando ausente). O header `Idempotency-Key` e metadados de transporte (`correlationId`, `causationId`) ficam de fora.
+- **Fluxo:** com o lock da wallet já tomado, busca por `(providerId, idempotencyKey)`. Achou e o hash confere: replay, com o resultado e o saldo **observados na época**. Achou e o hash difere: conflito (`PAYLOAD_MISMATCH`). Mesmo `externalTransactionId` com outra key: conflito (`EXTERNAL_ID_REUSED`).
+- **Corrida entre unicidades:** se o `INSERT` perde uma corrida (`23505`), a transação é desfeita e refeita uma vez, enxergando o vencedor como replay ou conflito. O banco é o árbitro final.
+
+### D19. Regras do caso de uso
+
+- Wallet inexistente não persiste transação (a FK exigiria a wallet): é um erro, não uma rejeição auditável.
+- Jogador ou moeda diferentes da wallet viram `REJECTED` (`PLAYER_MISMATCH`, `CURRENCY_MISMATCH`).
+- `LOSS` é processada sem ledger e sem `WalletBalanceChanged`.
+- "Referência já revertida" é checada no caso de uso, sob o lock da wallet (`hasProcessedReversal`), e sustentada pelo índice `uq_one_processed_reversal`. O ledger não serve para isso: não registra o que cada lançamento reverte.
+- `ROLLBACK` de um `REFUND` é permitido porque referencia o id do `REFUND`, não o da `BET`. Consequência: depois disso a `BET` continua com um estorno processado e não pode ser estornada de novo.
+- Evidência de concorrência: o cenário obrigatório (duas apostas de 80 sobre saldo 100), 50 requisições idênticas, 30 e 20 apostas paralelas e estornos simultâneos. Ao remover o `FOR UPDATE`, três desses testes falham.
 
 ## Decisões pendentes (exigidas pelo enunciado)
 
