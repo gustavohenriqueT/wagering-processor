@@ -7,7 +7,10 @@ const usd = (amount: string): Money => Money.from({ amount, currency: "USD" });
 
 describe("Money.from", () => {
 	test("aceita decimal válido e serializa com escala 2", () => {
-		expect(brl("25.00").toJSON()).toEqual({ amount: "25.00", currency: "BRL" });
+		expect(brl("25.00").toJSON()).toEqual({
+			amount: "25.00",
+			currency: "BRL",
+		});
 	});
 
 	test("aceita zero", () => {

@@ -49,6 +49,7 @@ beforeEach(async () => {
 
 interface ApiResult {
 	status: number;
+	// biome-ignore lint/suspicious/noExplicitAny: corpo JSON de resposta, navegado livremente pelos testes
 	body: any;
 	headers: Headers;
 }
@@ -70,13 +71,10 @@ async function call(
 	let parsed: unknown = text;
 	try {
 		parsed = JSON.parse(text);
-	} catch {
-		// corpo não-JSON (ex.: /metrics)
-	}
+	} catch {}
 	return { status: response.status, body: parsed, headers: response.headers };
 }
 
-/** Lê o valor de um contador no texto do /metrics (0 se ainda não existe). */
 function counter(metricsText: string, series: string): number {
 	const line = metricsText
 		.split("\n")
@@ -126,10 +124,15 @@ const submit = (body: unknown, key?: string) =>
 
 describe("health", () => {
 	test("live e ready respondem 200, sem autenticação", async () => {
-		expect((await call("GET", "/health/live")).body).toEqual({ status: "ok" });
+		expect((await call("GET", "/health/live")).body).toEqual({
+			status: "ok",
+		});
 		const ready = await call("GET", "/health/ready");
 		expect(ready.status).toBe(200);
-		expect(ready.body).toEqual({ status: "ok", checks: { postgres: "up" } });
+		expect(ready.body).toEqual({
+			status: "ok",
+			checks: { postgres: "up" },
+		});
 	});
 });
 
@@ -376,7 +379,7 @@ describe("GET /wallets/:id/ledger", () => {
 			pages += 1;
 		} while (cursor !== undefined);
 
-		expect(seen).toHaveLength(6); // abertura + 5 débitos
+		expect(seen).toHaveLength(6);
 		expect(new Set(seen).size).toBe(6);
 		expect(pages).toBe(3);
 	});
@@ -439,7 +442,7 @@ describe("reconciliação", () => {
 			.fork()
 			.execute("UPDATE wallets SET balance = 999.00 WHERE id = ?::uuid", [
 				wallet.id,
-			]); // corrupção proposital
+			]);
 
 		const { body } = await call("POST", `/wallets/${wallet.id}/reconciliation`);
 		expect(body.consistent).toBe(false);
@@ -447,7 +450,6 @@ describe("reconciliação", () => {
 		expect(body.calculatedBalance.amount).toBe("100.00");
 		expect(body.difference.amount).toBe("899.00");
 
-		// não foi corrigida em silêncio
 		expect(
 			(await call("GET", `/wallets/${wallet.id}`)).body.balance.amount,
 		).toBe("999.00");

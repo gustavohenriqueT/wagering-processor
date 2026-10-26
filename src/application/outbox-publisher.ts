@@ -43,33 +43,32 @@ export class OutboxPublisher {
 			);
 			let published = 0;
 			let failed = 0;
-			for (const record of batch) {
+			for (const message of batch) {
 				try {
 					await this.publisher.publish({
-						eventId: record.id,
-						groupId: record.aggregateId,
-						body: record.payload,
+						eventId: message.id,
+						groupId: message.aggregateId,
+						body: JSON.stringify(message.payload),
 					});
-					await outbox.markPublished(record.id, this.clock());
-					published += 1;
 				} catch (error) {
-					const delay = Math.min(
-						this.options.baseBackoffMs * 2 ** record.attempts,
-						this.options.maxBackoffMs,
-					);
-					await outbox.markFailed(
-						record.id,
-						new Date(this.clock().getTime() + delay),
-					);
+					message.scheduleRetry(this.clock(), {
+						baseMs: this.options.baseBackoffMs,
+						maxMs: this.options.maxBackoffMs,
+					});
+					await outbox.save(message);
 					failed += 1;
 					this.logger.log("warn", "outbox_publish_failed", {
-						eventId: record.id,
-						walletId: record.aggregateId,
-						eventType: record.eventType,
-						attempts: record.attempts + 1,
+						eventId: message.id,
+						walletId: message.aggregateId,
+						eventType: message.eventType,
+						attempts: message.attempts,
 						error: error instanceof Error ? error.message : String(error),
 					});
+					continue;
 				}
+				message.markPublished(this.clock());
+				await outbox.save(message);
+				published += 1;
 			}
 			const lag = await outbox.oldestPendingAgeSeconds();
 			return { published, failed, lag: lag ?? 0 };

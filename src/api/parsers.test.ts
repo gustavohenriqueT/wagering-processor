@@ -114,7 +114,10 @@ describe("parseSubmitTransaction", () => {
 		expect(
 			issuesOf(() =>
 				parseSubmitTransaction(
-					{ ...validBody, money: { amount: "25.5", currency: "BRL" } },
+					{
+						...validBody,
+						money: { amount: "25.5", currency: "BRL" },
+					},
 					"k",
 					"c",
 				),

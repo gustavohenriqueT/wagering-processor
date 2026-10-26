@@ -1,5 +1,6 @@
 import { DomainError } from "../domain/errors/domain-error";
 import { FailureCode } from "../domain/failure-code";
+import { InboxMessage } from "../domain/inbox-message";
 import type { Money } from "../domain/money";
 import {
 	WagerTransaction,
@@ -7,7 +8,10 @@ import {
 	WagerTransactionStatus,
 } from "../domain/wager-transaction";
 import type { Wallet } from "../domain/wallet";
-import { LedgerDirection } from "../domain/wallet-ledger-entry";
+import {
+	LedgerDirection,
+	type WalletLedgerEntry,
+} from "../domain/wallet-ledger-entry";
 import { Metrics } from "../observability/metrics";
 import { uniqueViolation } from "./db-errors";
 import { IdempotencyConflictError, WalletNotFoundError } from "./errors";
@@ -19,6 +23,11 @@ import {
 	WalletBalanceChanged,
 } from "./events/wager-events";
 import { computePayloadHash } from "./payload-hash";
+import {
+	DEFAULT_PENDING_POLICY,
+	type PendingReferencePolicy,
+	pendingBackoffMs,
+} from "./pending-reference-policy";
 import type {
 	StoredWagerTransaction,
 	UnitOfWork,
@@ -48,27 +57,6 @@ export interface ProcessWagerTransactionResult {
 	balance: Money;
 	idempotentReplay: boolean;
 	replayedBy?: "idempotency-key" | "inbox";
-}
-
-export interface PendingReferencePolicy {
-	maxAttempts: number;
-	baseDelayMs: number;
-	maxDelayMs: number;
-	ttlMs: number;
-}
-
-export const DEFAULT_PENDING_POLICY: PendingReferencePolicy = {
-	maxAttempts: 10,
-	baseDelayMs: 2_000,
-	maxDelayMs: 300_000,
-	ttlMs: 3_600_000,
-};
-
-export function pendingBackoffMs(
-	policy: PendingReferencePolicy,
-	attempts: number,
-): number {
-	return Math.min(policy.baseDelayMs * 2 ** attempts, policy.maxDelayMs);
 }
 
 interface Scope {
@@ -120,7 +108,6 @@ export class ProcessWagerTransaction {
 			) {
 				return undefined;
 			}
-			// Lock da wallet e releitura: outro worker pode ter decidido enquanto esperávamos o lock.
 			const wallet = await this.lockWallet(
 				context,
 				preview.transaction.walletId,
@@ -150,21 +137,21 @@ export class ProcessWagerTransaction {
 		command: ProcessWagerTransactionCommand,
 		payloadHash: string,
 	): Promise<ProcessWagerTransactionResult> {
-		// 1. Lock da wallet: a partir daqui, tudo para esta wallet é serializado.
 		const wallet = await this.lockWallet(context, command.walletId);
 		if (wallet === undefined) {
 			throw new WalletNotFoundError(command.walletId);
 		}
 		const now = this.clock();
 
-		// 2. Inbox (só para SQS): a mensagem é registrada na mesma transação do processamento.
 		if (command.inbox !== undefined) {
-			const firstDelivery = await context.inbox.register(
-				command.inbox.consumerName,
-				command.inbox.messageId,
+			const inboxMessage = InboxMessage.receive({
+				messageId: command.inbox.messageId,
+				consumerName: command.inbox.consumerName,
 				payloadHash,
-				now,
-			);
+				receivedAt: now,
+			});
+			inboxMessage.markProcessed(now);
+			const firstDelivery = await context.inbox.register(inboxMessage);
 			if (!firstDelivery) {
 				const already = await context.transactions.findByIdempotencyKey(
 					command.providerId,
@@ -176,7 +163,6 @@ export class ProcessWagerTransaction {
 			}
 		}
 
-		// 3. Idempotência (já sob o lock, então não há corrida dentro da mesma wallet).
 		const existing = await context.transactions.findByIdempotencyKey(
 			command.providerId,
 			command.idempotencyKey,
@@ -195,7 +181,6 @@ export class ProcessWagerTransaction {
 			);
 		}
 
-		// 4. Nova transação.
 		const transaction = WagerTransaction.create({
 			id: this.newId(),
 			providerId: command.providerId,
@@ -249,18 +234,17 @@ export class ProcessWagerTransaction {
 		}
 		return wallet;
 	}
+
 	private async applyRules(
 		scope: Scope,
 	): Promise<ProcessWagerTransactionResult> {
 		const { context, wallet, transaction, now } = scope;
 
-		// LOSS: registra o resultado sem mexer em saldo nem ledger.
 		if (!transaction.affectsBalance()) {
 			transaction.markProcessed(undefined, now);
 			return this.persistWithoutLedger(scope);
 		}
 
-		// Reversões: resolver e validar a referência.
 		let reference: WagerTransaction | undefined;
 		if (transaction.requiresReference()) {
 			const referenceExternalId = transaction.referenceExternalTransactionId;
@@ -285,7 +269,6 @@ export class ProcessWagerTransaction {
 			}
 		}
 
-		// Movimentar o saldo (a Wallet valida tudo antes de mutar).
 		const previousVersion = wallet.version;
 		const direction = transaction.ledgerDirectionFor(reference);
 		const movement = {
@@ -294,7 +277,7 @@ export class ProcessWagerTransaction {
 			transactionId: transaction.id,
 			at: now,
 		};
-		let entry;
+		let entry: WalletLedgerEntry;
 		try {
 			entry =
 				direction === LedgerDirection.Debit
@@ -302,7 +285,6 @@ export class ProcessWagerTransaction {
 					: wallet.credit(movement);
 		} catch (error) {
 			if (error instanceof DomainError && error.code === "INSUFFICIENT_FUNDS") {
-				// Aposta sem saldo e reversão que estouraria o saldo são situações operacionais diferentes.
 				return this.reject(
 					scope,
 					transaction.requiresReference()
@@ -313,7 +295,6 @@ export class ProcessWagerTransaction {
 			throw error;
 		}
 
-		// Persistir tudo, na mesma transação SQL.
 		transaction.markProcessed(reference?.id, now);
 		await this.save(scope, wallet.balance);
 		await context.ledger.insert(entry);
@@ -335,13 +316,15 @@ export class ProcessWagerTransaction {
 		await context.outbox.add(
 			new WagerTransactionProcessed({
 				...this.eventProps(scope),
-				data: { ...this.refs(transaction), balance: wallet.balance.toJSON() },
+				data: {
+					...this.refs(transaction),
+					balance: wallet.balance.toJSON(),
+				},
 			}),
 		);
 		return this.result(transaction, wallet.balance, false);
 	}
 
-	/** Transação nova: insere. Transação pendente: atualiza a decisão. */
 	private save(
 		scope: Scope,
 		observedBalance: Money,
@@ -418,7 +401,6 @@ export class ProcessWagerTransaction {
 		};
 	}
 
-	/** Transação processada que não move saldo (LOSS): sem ledger e sem WalletBalanceChanged. */
 	private async persistWithoutLedger(
 		scope: Scope,
 	): Promise<ProcessWagerTransactionResult> {
@@ -427,7 +409,10 @@ export class ProcessWagerTransaction {
 		await context.outbox.add(
 			new WagerTransactionProcessed({
 				...this.eventProps(scope),
-				data: { ...this.refs(transaction), balance: wallet.balance.toJSON() },
+				data: {
+					...this.refs(transaction),
+					balance: wallet.balance.toJSON(),
+				},
 			}),
 		);
 		return this.result(transaction, wallet.balance, false);

@@ -43,7 +43,10 @@ describe("computePayloadHash", () => {
 			}),
 		).not.toBe(original);
 		expect(
-			computePayloadHash({ ...base, referenceExternalTransactionId: "x" }),
+			computePayloadHash({
+				...base,
+				referenceExternalTransactionId: "x",
+			}),
 		).not.toBe(original);
 	});
 });

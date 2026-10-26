@@ -37,7 +37,6 @@ import {
 
 const brl = (amount: string): Money => Money.from({ amount, currency: "BRL" });
 
-// Retry com backoff e redelivery dependem do relógio do broker: esses testes levam segundos.
 setDefaultTimeout(40_000);
 
 let orm: MikroORM;
@@ -218,12 +217,14 @@ describe("processamento básico", () => {
 		const walletId = await newWallet("100.00");
 		const body = requestBody(walletId, "m1");
 		await send(walletId, body, "dedup-a");
-		await send(walletId, body, "dedup-b"); // o broker NÃO deduplica (ids diferentes); quem protege é a inbox
+		await send(walletId, body, "dedup-b");
 		const { consumer, metrics } = consumerFor();
 		consumer.start();
 		await waitFor(
 			async () =>
-				metrics.counter("sqs_messages_total", { outcome: "duplicate" }) === 1,
+				metrics.counter("sqs_messages_total", {
+					outcome: "duplicate",
+				}) === 1,
 		);
 		await consumer.stop();
 
@@ -247,13 +248,15 @@ describe("erros permanentes vão direto para a DLQ, com o motivo", () => {
 			walletId,
 			JSON.stringify({ messageId: "m2", type: "Outro", data: {} }),
 		);
-		await send(walletId, requestBody(walletId, "m3", "1.5")); // amount com 1 casa
-		await send(walletId, requestBody(crypto.randomUUID(), "m4")); // wallet que não existe
+		await send(walletId, requestBody(walletId, "m3", "1.5"));
+		await send(walletId, requestBody(crypto.randomUUID(), "m4"));
 		const { consumer, metrics } = consumerFor();
 		consumer.start();
 		await waitFor(
 			async () =>
-				metrics.counter("sqs_messages_total", { outcome: "processed" }) +
+				metrics.counter("sqs_messages_total", {
+					outcome: "processed",
+				}) +
 					sum(metrics, "sqs_dlq_total") >=
 				4,
 			{ timeoutMs: 20_000 },
@@ -359,6 +362,7 @@ describe("redelivery e concorrência", () => {
 		const walletId = await newWallet("100.00");
 		let crashed = false;
 		class CrashBeforeAck extends SQSClient {
+			// biome-ignore lint/suspicious/noExplicitAny: sobrescreve o send genérico do SDK para simular a falha do ack
 			override async send(command: any, options?: any): Promise<any> {
 				if (command instanceof DeleteMessageCommand && !crashed) {
 					crashed = true;
@@ -377,13 +381,15 @@ describe("redelivery e concorrência", () => {
 		consumer.start();
 		await waitFor(
 			async () =>
-				metrics.counter("sqs_messages_total", { outcome: "duplicate" }) === 1,
+				metrics.counter("sqs_messages_total", {
+					outcome: "duplicate",
+				}) === 1,
 			{ timeoutMs: 25_000 },
 		);
 		await consumer.stop();
 
 		expect(crashed).toBe(true);
-		expect(await balanceOf(walletId)).toBe("70.00"); // um único débito, apesar de duas entregas
+		expect(await balanceOf(walletId)).toBe("70.00");
 		expect(
 			await count(
 				"SELECT count(*)::int AS n FROM wallet_ledger_entries WHERE direction = 'DEBIT'",
@@ -421,7 +427,7 @@ describe("redelivery e concorrência", () => {
 		await Promise.all(instances.map(({ consumer }) => consumer.stop()));
 
 		for (const walletId of wallets) {
-			expect(await balanceOf(walletId)).toBe("50.00"); // 10 × 5.00
+			expect(await balanceOf(walletId)).toBe("50.00");
 			await expectLedgerMatchesBalance(walletId);
 		}
 		expect(
@@ -442,7 +448,7 @@ describe("redelivery e concorrência", () => {
 			async () =>
 				(await count("SELECT count(*)::int AS n FROM inbox_messages")) >= 3,
 		);
-		await first.consumer.stop(); // SIGTERM no meio do trabalho
+		await first.consumer.stop();
 
 		const second = consumerFor();
 		second.consumer.start();
@@ -453,7 +459,7 @@ describe("redelivery e concorrência", () => {
 		);
 		await second.consumer.stop();
 
-		expect(await balanceOf(walletId)).toBe("100.00"); // 20 × 5.00 debitados exatamente uma vez
+		expect(await balanceOf(walletId)).toBe("100.00");
 		expect(
 			await count(
 				"SELECT count(*)::int AS n FROM wallet_ledger_entries WHERE direction = 'DEBIT'",

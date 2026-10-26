@@ -52,8 +52,10 @@ describe("IntegrationEvent", () => {
 			false,
 		);
 		expect(
-			new WagerTransactionRejected({ ...base, causationId: "msg-1" }).toJSON()
-				.causationId,
+			new WagerTransactionRejected({
+				...base,
+				causationId: "msg-1",
+			}).toJSON().causationId,
 		).toBe("msg-1");
 	});
 

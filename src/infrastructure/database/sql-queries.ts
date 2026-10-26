@@ -68,7 +68,10 @@ export class SqlQueries implements QueryPort {
 				transactionId: text(row, "transaction_id"),
 				direction: text(row, "direction"),
 				money: { amount: text(row, "amount"), currency },
-				balanceBefore: { amount: text(row, "balance_before"), currency },
+				balanceBefore: {
+					amount: text(row, "balance_before"),
+					currency,
+				},
 				balanceAfter: { amount: text(row, "balance_after"), currency },
 				createdAt: text(row, "created_at"),
 			};

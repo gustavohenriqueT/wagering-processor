@@ -1,6 +1,6 @@
 import type { OutboxPublisherOptions } from "../application/outbox-publisher";
+import type { PendingReferencePolicy } from "../application/pending-reference-policy";
 import type { PendingReferenceWorkerOptions } from "../application/pending-reference-worker";
-import type { PendingReferencePolicy } from "../application/process-wager-transaction";
 import type { QueueNames } from "./queues";
 import type { SqsConsumerOptions } from "./sqs-consumer";
 

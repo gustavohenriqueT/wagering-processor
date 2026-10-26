@@ -1,4 +1,6 @@
+import type { InboxMessage } from "../domain/inbox-message";
 import type { Money } from "../domain/money";
+import type { OutboxMessage } from "../domain/outbox-message";
 import type { WagerTransaction } from "../domain/wager-transaction";
 import type { Wallet } from "../domain/wallet";
 import type { WalletLedgerEntry } from "../domain/wallet-ledger-entry";
@@ -55,29 +57,15 @@ export interface LedgerRepository {
 	insert(entry: WalletLedgerEntry): Promise<void>;
 }
 
-export interface OutboxRecord {
-	id: string;
-	aggregateId: string;
-	eventType: string;
-	payload: string;
-	attempts: number;
-}
-
 export interface OutboxRepository {
 	add(event: IntegrationEvent<unknown>): Promise<void>;
-	claimPending(now: Date, limit: number): Promise<OutboxRecord[]>;
-	markPublished(id: string, at: Date): Promise<void>;
-	markFailed(id: string, nextAttemptAt: Date): Promise<void>;
+	claimPending(now: Date, limit: number): Promise<OutboxMessage[]>;
+	save(message: OutboxMessage): Promise<void>;
 	oldestPendingAgeSeconds(): Promise<number | undefined>;
 }
 
 export interface InboxRepository {
-	register(
-		consumerName: string,
-		messageId: string,
-		payloadHash: string,
-		at: Date,
-	): Promise<boolean>;
+	register(message: InboxMessage): Promise<boolean>;
 }
 
 export interface UnitOfWorkContext {

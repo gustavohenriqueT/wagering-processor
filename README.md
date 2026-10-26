@@ -41,7 +41,7 @@ As filas são criadas automaticamente na inicialização: `wager-transactions.fi
 | `bun run dev` | API com reinício automático (`--watch`) |
 | `bun run start` | API sem watch |
 | `bun run test` | testes unitários (não precisam de Docker) |
-| `bun run test:integration` | testes de integração e concorrência contra PostgreSQL e SQS reais (precisam do Compose no ar; levam cerca de 1 minuto) |
+| `bun run test:integration` | testes de integração e concorrência contra PostgreSQL e SQS reais (precisam do Compose no ar; levam cerca de 2 minutos) |
 | `bun run test:all` | os dois |
 | `bun run typecheck` | checagem de tipos (TypeScript em modo estrito) |
 | `bun run migrate:up` | aplica as migrations pendentes |
@@ -139,7 +139,7 @@ Corpo, query string e valores monetários não entram no log. `/health/*` e `/me
 
 ```
 src/
-  domain/          regras de negócio puras: Money, Wallet, WagerTransaction, ledger
+  domain/          regras de negócio puras: Money, Wallet, WagerTransaction, ledger, InboxMessage, OutboxMessage
   application/     casos de uso, portas, eventos, publisher da outbox, worker de PENDING_REFERENCE
   infrastructure/  PostgreSQL: repositórios SQL, unit of work, consultas, migrations
   messaging/       consumidor SQS, publisher de eventos, ciclo de vida dos workers
@@ -148,12 +148,18 @@ src/
 test/integration/  testes contra PostgreSQL e SQS reais
 ```
 
-A regra de dependência: `domain` não depende de nada; `application` depende de `domain` e de interfaces (portas); `infrastructure`, `messaging` e `api` são adaptadores.
+A regra de dependência: `domain` não depende de nada; `application` depende de `domain` e de interfaces (portas); `infrastructure`, `messaging` e `api` são adaptadores. Essa regra é verificada por um teste (`src/architecture.test.ts`), que falha se alguém a violar.
 
 ## Testes
 
-- **Unitários** (`src/**/*.test.ts`, 119 testes): `Money`, `Wallet`, ledger, máquina de estados, hash de payload, eventos, validação de entrada, mapeamento de erros e filtro de exceções.
-- **Integração e concorrência** (`test/integration`, 94 testes): migrations e constraints, atomicidade, idempotência e replay, o cenário das duas apostas de 80 sobre saldo 100, 50 requisições idênticas em paralelo, conflitos de lock, publishers concorrentes, redelivery, retry com backoff, DLQ, worker morto antes do ack, 3 consumidores simultâneos, reinício do serviço e a API ponta a ponta (incluindo logs e métricas HTTP).
+- **Unitários** (`src/**/*.test.ts`, 144 testes): `Money`, `Wallet`, ledger, máquina de estados, `InboxMessage`, `OutboxMessage`, hash de payload, eventos, validação de entrada, mapeamento de erros, filtro de exceções e a regra de dependência entre camadas.
+- **Integração e concorrência** (`test/integration`, 129 testes), contra PostgreSQL e SQS reais:
+  - **constraints do schema:** cada garantia (saldo não negativo, unicidades, ledger imutável, aritmética do ledger, índice parcial da reversão, checks de consistência) é exercitada no banco real, que precisa recusar a violação;
+  - **migrations:** em um banco descartável, `up`, `up` idempotente, `down` da última, `down` total (nada sobra) e `up` de novo, comparando um retrato completo do schema;
+  - **atomicidade, idempotência e replay;** o cenário das duas apostas de 80 sobre saldo 100; 50 requisições idênticas em paralelo; conflitos de lock;
+  - **mensageria:** publishers concorrentes, redelivery, retry com backoff, DLQ, worker morto antes do ack;
+  - **múltiplos processos de verdade:** 3 processos do sistema operacional consomem a mesma fila e o mesmo banco, e um deles é morto com `SIGKILL` no meio do trabalho;
+  - **a API ponta a ponta** (incluindo logs e métricas HTTP).
 - A invariante verificada nos testes: o saldo da wallet é igual ao saldo reconstruído pelo ledger.
 
 ## Problemas comuns

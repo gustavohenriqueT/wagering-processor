@@ -211,7 +211,10 @@ export class SqsConsumer {
 						DataType: "String",
 						StringValue: (detail ?? "").slice(0, 500) || "-",
 					},
-					attempts: { DataType: "Number", StringValue: String(attempt) },
+					attempts: {
+						DataType: "Number",
+						StringValue: String(attempt),
+					},
 					originalMessageId: {
 						DataType: "String",
 						StringValue: message.MessageId ?? "-",

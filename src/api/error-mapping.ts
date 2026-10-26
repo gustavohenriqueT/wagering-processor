@@ -65,7 +65,12 @@ export function mapError(error: unknown): ApiError {
 				: status === 400
 					? "INVALID_REQUEST"
 					: `HTTP_${status}`;
-		return { status, code, message: error.message, retriable: status >= 500 };
+		return {
+			status,
+			code,
+			message: error.message,
+			retriable: status >= 500,
+		};
 	}
 	if (isTransientInfrastructureError(error)) {
 		return {

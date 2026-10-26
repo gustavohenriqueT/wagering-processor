@@ -1,5 +1,3 @@
-import { ValidationError } from "../api/errors";
-import { parseSubmitTransaction } from "../api/parsers";
 import { isTransientInfrastructureError } from "../application/db-errors";
 import {
 	IdempotencyConflictError,
@@ -7,8 +5,11 @@ import {
 } from "../application/errors";
 import type {
 	ProcessWagerTransaction,
+	ProcessWagerTransactionCommand,
 	ProcessWagerTransactionResult,
 } from "../application/process-wager-transaction";
+import { parseSubmitTransaction } from "../application/request-parsing";
+import { ValidationError } from "../application/validation-error";
 import { DomainError } from "../domain/errors/domain-error";
 
 export interface MessageContext {
@@ -74,7 +75,7 @@ export class WagerMessageHandler {
 		}
 
 		const data = record.data as Record<string, unknown>;
-		let command;
+		let command: ProcessWagerTransactionCommand;
 		try {
 			command = parseSubmitTransaction(
 				data,

@@ -2,7 +2,6 @@ import type { IntegrationEvent } from "../../application/events/integration-even
 import type {
 	InboxRepository,
 	LedgerRepository,
-	OutboxRecord,
 	OutboxRepository,
 	PendingSchedule,
 	StoredWagerTransaction,
@@ -10,7 +9,9 @@ import type {
 	WalletRepository,
 } from "../../application/ports";
 import { FailureCode } from "../../domain/failure-code";
+import type { InboxMessage } from "../../domain/inbox-message";
 import { Money } from "../../domain/money";
+import { OutboxMessage } from "../../domain/outbox-message";
 import {
 	WagerTransaction,
 	WagerTransactionKind,
@@ -326,22 +327,25 @@ export class SqlOutboxRepository implements OutboxRepository {
 	constructor(private readonly db: SqlDb) {}
 
 	async add(event: IntegrationEvent<unknown>): Promise<void> {
+		const message = OutboxMessage.enqueue(event);
 		await this.db.exec(
 			`INSERT INTO outbox_messages (id, aggregate_id, event_type, payload, occurred_at)
        VALUES (?::uuid, ?, ?, ?::jsonb, ?::timestamptz)`,
 			[
-				event.eventId,
-				event.aggregateId,
-				event.eventType,
-				JSON.stringify(event.toJSON()),
-				event.occurredAt.toISOString(),
+				message.id,
+				message.aggregateId,
+				message.eventType,
+				JSON.stringify(message.payload),
+				message.occurredAt.toISOString(),
 			],
 		);
 	}
 
-	async claimPending(now: Date, limit: number): Promise<OutboxRecord[]> {
+	async claimPending(now: Date, limit: number): Promise<OutboxMessage[]> {
 		const rows = await this.db.query(
-			`SELECT o.id, o.aggregate_id, o.event_type, o.payload::text AS payload, o.attempts
+			`SELECT o.id, o.aggregate_id, o.event_type, o.payload::text AS payload, o.attempts::int AS attempts,
+              ${iso("o.occurred_at")} AS occurred_at, ${iso("o.next_attempt_at")} AS next_attempt_at,
+              ${iso("o.published_at")} AS published_at
          FROM outbox_messages o
         WHERE o.published_at IS NULL
           AND (o.next_attempt_at IS NULL OR o.next_attempt_at <= ?::timestamptz)
@@ -355,26 +359,31 @@ export class SqlOutboxRepository implements OutboxRepository {
         FOR UPDATE OF o SKIP LOCKED`,
 			[now.toISOString(), limit],
 		);
-		return rows.map((row) => ({
-			id: text(row, "id"),
-			aggregateId: text(row, "aggregate_id"),
-			eventType: text(row, "event_type"),
-			payload: text(row, "payload"),
-			attempts: int(row, "attempts"),
-		}));
-	}
-
-	async markPublished(id: string, at: Date): Promise<void> {
-		await this.db.exec(
-			"UPDATE outbox_messages SET published_at = ?::timestamptz, attempts = attempts + 1 WHERE id = ?::uuid",
-			[at.toISOString(), id],
+		return rows.map((row) =>
+			OutboxMessage.rehydrate({
+				id: text(row, "id"),
+				aggregateId: text(row, "aggregate_id"),
+				eventType: text(row, "event_type"),
+				payload: JSON.parse(text(row, "payload")) as Record<string, unknown>,
+				occurredAt: date(row, "occurred_at"),
+				attempts: int(row, "attempts"),
+				nextAttemptAt: optionalDate(row, "next_attempt_at"),
+				publishedAt: optionalDate(row, "published_at"),
+			}),
 		);
 	}
 
-	async markFailed(id: string, nextAttemptAt: Date): Promise<void> {
+	async save(message: OutboxMessage): Promise<void> {
 		await this.db.exec(
-			"UPDATE outbox_messages SET attempts = attempts + 1, next_attempt_at = ?::timestamptz WHERE id = ?::uuid",
-			[nextAttemptAt.toISOString(), id],
+			`UPDATE outbox_messages
+          SET attempts = ?, next_attempt_at = ?::timestamptz, published_at = ?::timestamptz
+        WHERE id = ?::uuid`,
+			[
+				message.attempts,
+				message.nextAttemptAt?.toISOString() ?? null,
+				message.publishedAt?.toISOString() ?? null,
+				message.id,
+			],
 		);
 	}
 
@@ -391,22 +400,17 @@ export class SqlOutboxRepository implements OutboxRepository {
 export class SqlInboxRepository implements InboxRepository {
 	constructor(private readonly db: SqlDb) {}
 
-	async register(
-		consumerName: string,
-		messageId: string,
-		payloadHash: string,
-		at: Date,
-	): Promise<boolean> {
+	async register(message: InboxMessage): Promise<boolean> {
 		const inserted = await this.db.exec(
 			`INSERT INTO inbox_messages (consumer_name, message_id, payload_hash, received_at, processed_at)
        VALUES (?, ?, ?, ?::timestamptz, ?::timestamptz)
        ON CONFLICT (consumer_name, message_id) DO NOTHING`,
 			[
-				consumerName,
-				messageId,
-				payloadHash,
-				at.toISOString(),
-				at.toISOString(),
+				message.consumerName,
+				message.messageId,
+				message.payloadHash,
+				message.receivedAt.toISOString(),
+				message.processedAt?.toISOString() ?? null,
 			],
 		);
 		return inserted === 1;

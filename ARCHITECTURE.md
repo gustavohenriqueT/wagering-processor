@@ -26,10 +26,12 @@ Se qualquer passo falha, **nada** é gravado. O evento só é publicado **depois
 
 **Camadas** (a regra: as dependências apontam para dentro):
 
-- `domain`: regras puras (`Money`, `Wallet`, `WagerTransaction`, `WalletLedgerEntry`). Não depende de nada.
-- `application`: casos de uso e **portas** (interfaces de repositório e de unit of work). Não conhece SQL.
+- `domain`: regras puras (`Money`, `Wallet`, `WagerTransaction`, `WalletLedgerEntry`, `InboxMessage`, `OutboxMessage`). Não depende de nada.
+- `application`: casos de uso e **portas** (interfaces de repositório e de unit of work). Não conhece SQL, framework web nem SDK de fila.
 - `infrastructure`: implementa as portas em PostgreSQL.
-- `api` e `messaging`: adaptadores de entrada (HTTP e SQS).
+- `api` e `messaging`: adaptadores de entrada (HTTP e SQS). Um não importa do outro para lógica compartilhada: o parsing da requisição de transação, que HTTP e SQS usam, vive em `application`.
+
+**A regra é imposta por teste**, não só descrita: `src/architecture.test.ts` falha se, por exemplo, o domínio importar a camada de observabilidade, ou se a aplicação importar o NestJS ou um driver de banco ou de fila. Foi verificado plantando violações e conferindo que o teste as acusa pelo nome.
 
 ## 2. Ambiente e stack
 
@@ -61,12 +63,12 @@ O valor monetário **nunca** passa por `number`. O driver devolve `numeric` e `b
 
 **Estratégia transacional.** Cada caso de uso roda em um *unit of work*: `em.fork().transactional(...)`, com uma conexão própria por unidade de trabalho (sem o `fork`, requisições concorrentes dividiriam a mesma conexão e o lock deixaria de funcionar). Nível de isolamento padrão (`READ COMMITTED`), com **lock explícito de linha** (seção 6). A atomicidade é provada em teste: um erro no meio desfaz transação, ledger, saldo e evento juntos.
 
-**Migrations em SQL, reversíveis.** O `down()` do MikroORM lança erro por padrão, então cada migration implementa o seu. Foram três: o schema inicial, a correção de `ck_reference_required` (seção 5) e a ordem da outbox mais o agendamento do `PENDING_REFERENCE`. Verificadas aplicando do zero, revertendo e reaplicando. Cada migration roda em uma transação.
+**Migrations em SQL, reversíveis.** O `down()` do MikroORM lança erro por padrão, então cada migration implementa o seu. Foram três: o schema inicial, a correção de `ck_reference_required` (seção 5) e a ordem da outbox mais o agendamento do `PENDING_REFERENCE`. A reversibilidade é **verificada por teste automatizado**, num banco descartável: `up`, `up` idempotente, `down` da última e `up`, `down` total (nenhuma tabela, função ou trigger sobra) e `up` de novo. Em cada passo, um retrato completo do schema (colunas, constraints, índices, triggers e funções) é comparado, e o schema reaplicado é idêntico ao original. Cada migration roda em uma transação.
 
 ## 4. Modelo de domínio
 
 **`Money`**: centavos em `bigint`. Aritmética inteira é exata (0.10 + 0.20 resulta em 0.30), sem dependência de biblioteca de decimais.
-- Entrada **estrita**: exatamente 2 casas decimais, no máximo 17 dígitos inteiros (o limite de `numeric(19,2)`: o domínio rejeita antes de o banco estourar). `"25"`, `"25.5"`, `"1e3"`, `"NaN"`, vazio e negativos são rejeitados; `amount` que não é string também (JSON pode trazer número).
+- Entrada **estrita**: exatamente 2 casas decimais, no máximo 17 dígitos inteiros (o limite de `numeric(19,2)`: o domínio rejeita antes de o banco estourar). `"25"`, `"25.5"`, `"1e3"`, `"NaN"`, vazio e negativos são rejeitados; `amount` que não é string também (JSON pode trazer número). Como a entrada com mais de 2 casas é rejeitada, o `Money` não tem operação de arredondamento: não há multiplicação nem divisão que o exija.
 - Moedas diferentes: `add`, `subtract` e `isLessThan` lançam `CURRENCY_MISMATCH`; `equals` devolve `false` (é uma pergunta, e "não são iguais" é uma resposta válida).
 - `Money.from(m.toJSON())` falha para negativos de propósito (negativos são rejeitados em contratos de entrada), embora `subtract` e `negate` possam produzi-los internamente.
 - Trade-off: o modelo assume 2 casas decimais para toda moeda (JPY e BHD exigiriam escala por moeda).
@@ -83,6 +85,10 @@ O valor monetário **nunca** passa por `number`. O driver devolve `numeric` e `b
 | `PENDING_REFERENCE` | `PROCESSED`, `REJECTED`, `FAILED` |
 
 `PENDING_REFERENCE` para `PENDING_REFERENCE` não é transição: se a referência continua ausente, o worker só conta a tentativa e agenda a próxima. Uma transição inválida lança `InvalidTransactionStateError` (erro de programação, nunca um resultado de negócio). `checkReference` aplica as regras de referência nesta ordem, e a ordem define qual código o provedor recebe quando há mais de um problema: tipo da referência, contexto (provedor, jogador, wallet, rodada e moeda), status `PROCESSED`, valor igual.
+
+**`InboxMessage`**: o registro de que um consumidor recebeu uma mensagem. A chave `(consumerName, messageId)` é o que impede o segundo processamento. `receive` valida os campos, `markProcessed` não aceita processar duas vezes nem anteceder o recebimento, e `rehydrate` não revalida.
+
+**`OutboxMessage`**: o evento gravado na mesma transação do fato de negócio, à espera de publicação. `enqueue(evento)` cria uma cópia JSON profunda e imutável do payload (o que é gravado é exatamente o que será publicado). O ciclo de vida é uma máquina de dois estados, pendente e publicado (terminal): `isPending`, `isDue(agora)`, `markPublished` e `scheduleRetry`. O **backoff exponencial limitado** mora na própria classe (`scheduleRetry`), e não no publisher: o publisher só decide quando chamar. Domínio e aplicação continuam desacoplados: a classe só exige que o evento tenha `eventId`, `aggregateId`, `eventType`, `occurredAt` e `toJSON()`.
 
 **O domínio não gera ids nem datas**: eles entram por parâmetro. Isso torna os testes determinísticos e deixa o relógio na borda.
 
@@ -105,9 +111,11 @@ O enunciado exige que as garantias estejam **no schema**, não só no código. O
 
 Todas as constraints que o código precisa distinguir têm **nome estável**: ao receber um erro `23505` (violação de unicidade), o código lê o nome da constraint para decidir o que fazer (conflito de wallet, replay, etc.).
 
+**Cada garantia é testada contra o banco real.** Uma suíte de 28 testes tenta violar cada uma delas e exige que o **banco** recuse, citando a constraint que recusou (inclusive o caso permitido de cada fronteira: saldo zero, o `WIN` com referência, o `ROLLBACK` do `REFUND`, a tentativa `REJECTED` que não bloqueia a reversão correta). Como teste de mutação, derrubamos o trigger do ledger, o índice parcial e o `CHECK` de saldo, um de cada vez, e a suíte falhou exatamente nos testes correspondentes; com o schema restaurado, voltou a passar.
+
 **Correção durante o projeto.** A constraint `ck_reference_required` foi criada proibindo referência em tipos que não fossem reversões, mas o enunciado diz que o `WIN` **pode** referenciar a `BET`. Foi corrigida por uma migration nova: reversões **exigem** referência e os demais tipos **podem** ter.
 
-**`TRUNCATE` no ledger.** O trigger bloqueia `UPDATE` e `DELETE`, mas **não** `TRUNCATE`. Foi uma escolha: os testes de integração precisam limpar as tabelas entre execuções. Em produção, a proteção contra `TRUNCATE` ficaria nas permissões do papel da aplicação.
+**`TRUNCATE` no ledger.** O trigger bloqueia `UPDATE` e `DELETE`, mas **não** `TRUNCATE`. Foi uma escolha: os testes de integração precisam limpar as tabelas entre execuções (há um teste que documenta essa decisão). Em produção, a proteção contra `TRUNCATE` ficaria nas permissões do papel da aplicação.
 
 ## 6. Concorrência
 
@@ -124,6 +132,8 @@ A unidade de concorrência é a `walletId`.
 **Corrida entre unicidades.** Se um `INSERT` perde uma corrida de unicidade (por exemplo, a mesma `Idempotency-Key` em wallets diferentes, que não compartilham lock), a transação é desfeita e refeita **uma vez**, e na segunda tentativa enxerga o vencedor como replay ou conflito. O cliente nunca vê um 500 por isso.
 
 **Evidência.** O cenário obrigatório (duas apostas de 80 sobre saldo 100, simultâneas) resulta em exatamente uma `PROCESSED`, uma `REJECTED` por saldo insuficiente, saldo final 20.00 e **um** débito no ledger. Há também testes com 50 requisições idênticas em paralelo, 30 apostas distintas na mesma wallet, 20 apostas disputando o saldo (só 10 passam) e estornos simultâneos da mesma aposta. Como teste de mutação, **removemos o `FOR UPDATE`** e três desses testes falharam; com ele restaurado, passam. Os testes provam que o lock é o que protege.
+
+**Múltiplas instâncias de verdade.** O requisito "correto com várias instâncias" é provado com **processos do sistema operacional** (`Bun.spawn`), cada um com seu pool de conexões: três processos consomem a mesma fila e o mesmo banco; o trabalho é dividido entre eles; e um deles é morto com `SIGKILL` (sem shutdown, sem ack, sem fechar conexões) no meio do trabalho e substituído por outro. No fim, cada mensagem tem **efeito único**, o saldo de cada wallet está correto e igual ao do ledger, e a DLQ está vazia.
 
 ## 7. Idempotência
 
@@ -222,14 +232,14 @@ Todo erro tem o formato `{ "error": { "code", "message", "retriable", "details"?
 - A mensagem só é apagada da fila principal **depois** que a DLQ confirma o recebimento: nunca se perde mensagem.
 - A `RedrivePolicy` do broker (`maxReceiveCount = 10`) é a rede de segurança para o caso de o worker morrer repetidamente sem registrar a falha.
 - **Wallet inexistente é tratada como permanente.** A alternativa seria tentar de novo por um tempo, para o caso de a wallet ainda estar sendo criada.
-- A **inbox** é gravada na mesma transação do processamento (`ON CONFLICT DO NOTHING`): uma entrega duplicada devolve o resultado já gravado, sem novo efeito. Um worker que morre depois do commit e antes do ack faz a mensagem voltar, e a inbox impede o segundo efeito.
+- A **inbox** (`InboxMessage`) é gravada na mesma transação do processamento (`ON CONFLICT DO NOTHING`): uma entrega duplicada devolve o resultado já gravado, sem novo efeito. Um worker que morre depois do commit e antes do ack faz a mensagem voltar, e a inbox impede o segundo efeito.
 - Dentro de um lote, mensagens do mesmo `MessageGroupId` (a wallet) são tratadas em ordem; grupos diferentes correm em paralelo.
 - **Encerramento (SIGTERM):** o long poll é abortado, as mensagens em andamento terminam, e as já recebidas mas ainda não iniciadas voltam ao SQS (`VisibilityTimeout = 0`). Os workers param em `beforeApplicationShutdown`, **antes** de o pool de conexões fechar.
 
-**Outbox.** Os eventos são gravados na mesma transação do restante (atomicidade provada em teste). O publisher:
+**Outbox.** Os eventos são gravados (como `OutboxMessage`) na mesma transação do restante (atomicidade provada em teste). O publisher:
 - reserva eventos com `SELECT ... FOR UPDATE SKIP LOCKED`, devolvendo só o **primeiro evento pendente de cada wallet** (pela coluna `seq`), o que preserva a ordem por wallet mesmo com vários publishers;
 - publica em `wager-events.fifo`, com `MessageGroupId = walletId` e `MessageDeduplicationId = eventId`;
-- em caso de falha, reagenda com backoff exponencial, e os eventos seguintes daquela wallet esperam;
+- em caso de falha, a própria `OutboxMessage` agenda a próxima tentativa com backoff exponencial (`scheduleRetry`), e os eventos seguintes daquela wallet esperam;
 - se o processo morre depois do commit e antes de publicar (ou depois de publicar e antes de marcar), o lote volta a ficar pendente e **outra instância o publica**. A entrega é **pelo menos uma vez**, e o `eventId` permite deduplicar no broker e no consumidor.
 
 Trade-off: a ordem estrita por wallet limita a vazão a um evento por wallet por rodada do publisher, e uma falha bloqueia os eventos seguintes daquela wallet até o backoff vencer.
@@ -285,18 +295,24 @@ O rótulo de rota usa o **padrão** (`/wallets/:walletId`), nunca o caminho conc
 
 ## 15. Estratégia de testes
 
-- **Unitários (119):** domínio, hash, eventos, validação de entrada, mapeamento de erros e filtro de exceções. Rodam sem Docker.
-- **Integração e concorrência (94):** contra PostgreSQL e SQS **reais** (nenhum mock substitui o banco ou a fila). Cobrem constraints e migrations, atomicidade, idempotência, o cenário obrigatório de concorrência, conflitos de lock, publishers concorrentes, o worker morto antes do ack, 3 consumidores simultâneos, o reinício do serviço e a API ponta a ponta.
-- **Determinismo:** o domínio recebe relógio e gerador de ids; as esperas dos testes de SQS usam condições (`waitFor`), não pausas fixas.
-- **Invariante final** verificada em todos os cenários: o saldo da wallet é igual ao saldo reconstruído pelo ledger.
-- **Teste de mutação:** remover o `FOR UPDATE` faz os testes de concorrência falharem, o que mostra que eles detectam o defeito.
-- **Observabilidade testada:** o conflito de lock é provocado de forma determinística (uma transação segura o lock enquanto outra tenta); a correlação, a latência por padrão de rota e o log de acesso (incluindo a ausência de corpo e de valores) são verificados contra o servidor real.
+- **Unitários (144):** domínio (incluindo `InboxMessage` e `OutboxMessage`), hash, eventos, validação de entrada, mapeamento de erros, filtro de exceções e a regra de dependência entre camadas. Rodam sem Docker.
+- **Integração e concorrência (129):** contra PostgreSQL e SQS **reais** (nenhum mock substitui o banco ou a fila; os dublês só injetam falhas, como um banco indisponível ou um `DeleteMessage` que falha uma vez). Cobrem:
+  - **constraints do schema** (28 testes): cada garantia é exercitada e o banco precisa recusar a violação (seção 5);
+  - **migrations** (5 testes): o ciclo `up`, `down` e `up` num banco descartável, comparando o schema (seção 3);
+  - atomicidade, idempotência e replay, o cenário obrigatório de concorrência, conflitos de lock;
+  - publishers concorrentes, redelivery, retry com backoff, DLQ, worker morto antes do ack;
+  - **múltiplos processos de verdade** (2 testes): 3 processos do sistema operacional sobre o mesmo banco e a mesma fila, e um deles morto com `SIGKILL` (seção 6);
+  - a API ponta a ponta, incluindo correlação, latência por padrão de rota e log de acesso (e a ausência de corpo e de valores nele).
+- **Determinismo:** o domínio recebe relógio e gerador de ids; as esperas dos testes de SQS e de multiprocesso usam condições (`waitFor`), não pausas fixas; os testes multiprocesso foram repetidos várias vezes para verificar estabilidade.
+- **Invariante final** verificada nos cenários financeiros: o saldo da wallet é igual ao saldo reconstruído pelo ledger.
+- **Testes de mutação:** remover o `FOR UPDATE` derruba os testes de concorrência; derrubar o trigger do ledger, o índice parcial ou o `CHECK` de saldo derruba os testes de constraints; plantar uma violação de camada derruba o teste de arquitetura. Em todos os casos o teste falhou apontando o defeito, e voltou a passar com o código restaurado.
 
 ## 16. Limitações conhecidas
 
 - **Sem teste de carga** (`bun run test:load`), que é opcional no enunciado. Não afirmamos nenhum número de vazão.
 - **Entrega de eventos pelo menos uma vez:** os consumidores precisam deduplicar por `eventId`.
 - **Vazão por wallet limitada** pelo lock pessimista e pela publicação ordenada da outbox.
+- **Os testes multiprocesso rodam em uma máquina só:** os processos são independentes (conexões e memória próprias), mas dividem o mesmo host de PostgreSQL e de SQS. Não há teste com instâncias em hosts diferentes.
 - **Os testes de integração usam o MiniStack**; o comportamento de algumas funções do SQS pode divergir da AWS real.
 - **Métricas em memória, por instância:** reiniciam com o processo e não são agregadas entre instâncias. Sem OpenTelemetry nem dashboard (opcionais).
 - **`wager_transactions_total` não conta as transações resolvidas depois pelo worker de pendências** (esse resultado aparece em `pending_reference_total`).
