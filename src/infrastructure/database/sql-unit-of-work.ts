@@ -3,6 +3,7 @@ import type { UnitOfWork, UnitOfWorkContext } from "../../application/ports";
 import { SqlDb } from "./sql-db";
 import {
 	SqlLedgerRepository,
+	SqlOutboxRepository,
 	SqlWagerTransactionRepository,
 	SqlWalletRepository,
 } from "./sql-repositories";
@@ -17,6 +18,7 @@ export class SqlUnitOfWork implements UnitOfWork {
 				wallets: new SqlWalletRepository(db),
 				transactions: new SqlWagerTransactionRepository(db),
 				ledger: new SqlLedgerRepository(db),
+				outbox: new SqlOutboxRepository(db),
 			});
 		});
 	}

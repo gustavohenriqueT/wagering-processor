@@ -1,5 +1,7 @@
+import type { IntegrationEvent } from "../../application/events/integration-event";
 import type {
 	LedgerRepository,
+	OutboxRepository,
 	StoredWagerTransaction,
 	WagerTransactionRepository,
 	WalletRepository,
@@ -235,6 +237,24 @@ export class SqlLedgerRepository implements LedgerRepository {
 				entry.balanceBefore.toJSON().amount,
 				entry.balanceAfter.toJSON().amount,
 				entry.createdAt.toISOString(),
+			],
+		);
+	}
+}
+
+export class SqlOutboxRepository implements OutboxRepository {
+	constructor(private readonly db: SqlDb) {}
+
+	async add(event: IntegrationEvent<unknown>): Promise<void> {
+		await this.db.exec(
+			`INSERT INTO outbox_messages (id, aggregate_id, event_type, payload, occurred_at)
+       VALUES (?::uuid, ?, ?, ?::jsonb, ?::timestamptz)`,
+			[
+				event.eventId,
+				event.aggregateId,
+				event.eventType,
+				JSON.stringify(event.toJSON()),
+				event.occurredAt.toISOString(),
 			],
 		);
 	}

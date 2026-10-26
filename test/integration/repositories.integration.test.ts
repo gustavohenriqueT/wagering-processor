@@ -7,6 +7,7 @@ import {
 	test,
 } from "bun:test";
 import type { MikroORM } from "@mikro-orm/postgresql";
+import { WalletBalanceChanged } from "../../src/application/events/wager-events";
 import { FailureCode } from "../../src/domain/failure-code";
 import { Money } from "../../src/domain/money";
 import {
@@ -15,6 +16,7 @@ import {
 	WagerTransactionStatus,
 } from "../../src/domain/wager-transaction";
 import { Wallet } from "../../src/domain/wallet";
+import { LedgerDirection } from "../../src/domain/wallet-ledger-entry";
 import { SqlUnitOfWork } from "../../src/infrastructure/database/sql-unit-of-work";
 import { createTestOrm, sleep, truncateAll } from "./support/test-database";
 
@@ -276,5 +278,67 @@ describe("lock por wallet (FOR UPDATE)", () => {
 
 		await Promise.all([first, second]);
 		expect(secondSaw).toBe("100.00");
+	});
+});
+
+describe("SqlOutboxRepository", () => {
+	function balanceChanged(walletId: string, note = "ok"): WalletBalanceChanged {
+		return new WalletBalanceChanged({
+			eventId: crypto.randomUUID(),
+			aggregateId: walletId,
+			correlationId: `corr-${note}`,
+			occurredAt: t0,
+			data: {
+				walletId,
+				transactionId: crypto.randomUUID(),
+				direction: LedgerDirection.Debit,
+				money: { amount: "30.00", currency: "BRL" },
+				balanceBefore: { amount: "100.00", currency: "BRL" },
+				balanceAfter: { amount: "70.00", currency: "BRL" },
+				walletVersion: 2,
+			},
+		});
+	}
+
+	test("grava o envelope como jsonb, pendente de publicação", async () => {
+		const walletId = await seedWallet();
+		const event = balanceChanged(walletId, "a?b:c"); // caracteres que costumam quebrar placeholders
+		await uow.run(({ outbox }) => outbox.add(event));
+
+		const rows = await orm.em.fork().execute(
+			`SELECT aggregate_id, event_type, payload->>'eventType' AS type_in_payload,
+              payload->>'correlationId' AS correlation, payload #>> '{data,balanceAfter,amount}' AS after,
+              published_at, attempts
+         FROM outbox_messages`,
+		);
+		expect(rows).toHaveLength(1);
+		const row = rows[0] as Record<string, unknown>;
+		expect(row.aggregate_id).toBe(walletId);
+		expect(row.event_type).toBe("WalletBalanceChanged");
+		expect(row.type_in_payload).toBe("WalletBalanceChanged");
+		expect(row.correlation).toBe("corr-a?b:c");
+		expect(row.after).toBe("70.00");
+		expect(row.published_at).toBeNull();
+		expect(row.attempts).toBe(0);
+	});
+
+	test("o evento da outbox some junto se a transação falhar (atomicidade)", async () => {
+		const walletId = await seedWallet();
+		await expect(
+			uow.run(async ({ outbox, transactions }) => {
+				await transactions.insert(newBet(walletId), undefined);
+				await outbox.add(balanceChanged(walletId));
+				throw new Error("falha depois do evento");
+			}),
+		).rejects.toThrow("falha depois do evento");
+
+		const outboxRows = await orm.em
+			.fork()
+			.execute("SELECT 1 FROM outbox_messages");
+		const txRows = await orm.em
+			.fork()
+			.execute("SELECT 1 FROM wager_transactions");
+		expect(outboxRows).toHaveLength(0);
+		expect(txRows).toHaveLength(0);
 	});
 });
