@@ -5,7 +5,6 @@ import {
 	Headers,
 	HttpCode,
 	Inject,
-	Logger,
 	Param,
 	Post,
 	Query,
@@ -18,6 +17,7 @@ import type {
 	ReconciliationView,
 	WalletView,
 } from "../application/queries";
+import type { Logger } from "../observability/logger";
 import { NotFoundError } from "./errors";
 import type { HttpResponse } from "./http";
 import { Metrics } from "./metrics";
@@ -28,7 +28,7 @@ import {
 	parseLimit,
 	parseUuid,
 } from "./parsers";
-import { QUERIES } from "./tokens";
+import { LOGGER, QUERIES } from './tokens';
 
 function correlationIdOf(
 	header: string | undefined,
@@ -42,12 +42,12 @@ function correlationIdOf(
 
 @Controller("wallets")
 export class WalletsController {
-	private readonly logger = new Logger("Reconciliation");
 
 	constructor(
     @Inject(CreateWallet) private readonly createWallet: CreateWallet,
     @Inject(QUERIES) private readonly queries: QueryPort,
     @Inject(Metrics) private readonly metrics: Metrics,
+    @Inject(LOGGER) private readonly logger: Logger,
   ) {}
 
 	@Post()
@@ -113,16 +113,14 @@ export class WalletsController {
     this.metrics.inc('reconciliations_total', { consistent: String(result.consistent) });
     if (!result.consistent) {
       this.metrics.inc('reconciliation_divergences_total');
-      this.logger.warn(
-        JSON.stringify({
-          event: 'reconciliation_divergence',
-          walletId: result.walletId,
-          storedBalance: result.storedBalance,
-          calculatedBalance: result.calculatedBalance,
-          difference: result.difference,
-          checkedEntries: result.checkedEntries,
-        }),
-      );
+      this.logger.log('warn', 'reconciliation_divergence', {
+        walletId: result.walletId,
+        storedBalance: result.storedBalance.amount,
+       calculatedBalance: result.calculatedBalance.amount,
+       difference: result.difference.amount,
+       currency: result.difference.currency,
+       checkedEntries: result.checkedEntries,
+     });
     }
     return result;
   }

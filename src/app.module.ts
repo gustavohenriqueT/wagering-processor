@@ -4,17 +4,21 @@ import {
 	type DynamicModule,
 	Inject,
 	Injectable,
+	type MiddlewareConsumer,
 	Module,
+	type NestModule,
 	type OnApplicationShutdown,
 	type Provider,
 } from "@nestjs/common";
-import { APP_FILTER, APP_GUARD } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD } from "@nestjs/core";
+import { AccessLogMiddleware } from "./api/access-log.middleware";
 import { ApiExceptionFilter } from "./api/api-exception.filter";
-import { AuthGuard } from './api/auth.guard';
+import { AuthGuard } from "./api/auth.guard";
 import { Metrics } from "./api/metrics";
 import { MetricsController } from "./api/metrics.controller";
 import { ReadinessService } from "./api/readiness.service";
 import {
+	LOGGER,
 	MESSAGING_OPTIONS,
 	ORM,
 	QUERIES,
@@ -37,6 +41,7 @@ import { SqlUnitOfWork } from "./infrastructure/database/sql-unit-of-work";
 import type { MessagingOptions } from "./messaging/messaging-options";
 import { DEFAULT_QUEUE_NAMES, ensureQueues } from "./messaging/queues";
 import { Workers } from "./messaging/workers";
+import { JsonLogger, type Logger } from "./observability/logger";
 
 @Injectable()
 class OrmShutdown implements OnApplicationShutdown {
@@ -49,11 +54,20 @@ class OrmShutdown implements OnApplicationShutdown {
 
 type OrmOptions = Parameters<typeof MikroORM.init>[0];
 
+export interface AppOptions {
+	logger?: Logger;
+}
+
 @Module({})
-export class AppModule {
+export class AppModule implements NestModule {
+	configure(consumer: MiddlewareConsumer): void {
+		consumer.apply(AccessLogMiddleware).forRoutes("*");
+	}
+
 	static forRoot(
 		ormOptions: OrmOptions,
 		messaging?: MessagingOptions,
+		options: AppOptions = {},
 	): DynamicModule {
 		const messagingProviders: Provider[] =
 			messaging === undefined
@@ -125,17 +139,19 @@ export class AppModule {
 				},
 				{
 					provide: ProcessWagerTransaction,
-					useFactory: (uow: UnitOfWork) =>
+					useFactory: (uow: UnitOfWork, metrics: Metrics) =>
 						new ProcessWagerTransaction(
 							uow,
 							() => new Date(),
 							() => crypto.randomUUID(),
 							{ ...DEFAULT_PENDING_POLICY, ...messaging?.pendingPolicy },
+							metrics,
 						),
-					inject: [UNIT_OF_WORK],
+					inject: [UNIT_OF_WORK, Metrics],
 				},
 				{ provide: APP_FILTER, useClass: ApiExceptionFilter },
-        { provide: APP_GUARD, useClass: AuthGuard },
+				{ provide: APP_GUARD, useClass: AuthGuard },
+				{ provide: LOGGER, useValue: options.logger ?? new JsonLogger("http") },
 				...messagingProviders,
 			],
 		};

@@ -61,6 +61,27 @@ export class SqlWalletRepository implements WalletRepository {
 		return row === undefined ? undefined : toWallet(row);
 	}
 
+	async lockByIdReportingContention(
+		walletId: string,
+	): Promise<{ wallet: Wallet | undefined; contended: boolean }> {
+		const free = await this.db.query(
+			`SELECT ${WALLET_COLUMNS} FROM wallets WHERE id = ?::uuid FOR UPDATE SKIP LOCKED`,
+			[walletId],
+		);
+		const row = free[0];
+		if (row !== undefined) {
+			return { wallet: toWallet(row), contended: false };
+		}
+		const exists = await this.db.query(
+			"SELECT 1 AS found FROM wallets WHERE id = ?::uuid",
+			[walletId],
+		);
+		if (exists.length === 0) {
+			return { wallet: undefined, contended: false };
+		}
+		return { wallet: await this.lockById(walletId), contended: true };
+	}
+
 	async save(wallet: Wallet, expectedVersion: number): Promise<void> {
 		const affected = await this.db.exec(
 			`UPDATE wallets

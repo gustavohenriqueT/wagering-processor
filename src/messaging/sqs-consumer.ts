@@ -134,6 +134,11 @@ export class SqsConsumer {
 				this.metrics.inc("sqs_messages_total", {
 					outcome: duplicate ? "duplicate" : "processed",
 				});
+				this.metrics.inc("wager_transactions_total", {
+					kind: outcome.kind,
+					status: outcome.result.status,
+					replay: String(outcome.result.idempotentReplay),
+				});
 				if (duplicate) {
 					this.metrics.inc("duplicates_detected_total", {
 						source: outcome.result.replayedBy ?? "unknown",
@@ -242,7 +247,6 @@ export class SqsConsumer {
 	private async release(message: Message): Promise<void> {
 		try {
 			await this.changeVisibility(message, 0);
-		} catch {
-		}
+		} catch {}
 	}
 }

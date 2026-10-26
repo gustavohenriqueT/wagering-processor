@@ -18,6 +18,9 @@ export interface PendingSchedule {
 export interface WalletRepository {
 	insert(wallet: Wallet): Promise<void>;
 	lockById(walletId: string): Promise<Wallet | undefined>;
+	lockByIdReportingContention(
+		walletId: string,
+	): Promise<{ wallet: Wallet | undefined; contended: boolean }>;
 	save(wallet: Wallet, expectedVersion: number): Promise<void>;
 }
 

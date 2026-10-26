@@ -23,6 +23,7 @@ export type MessageOutcome =
 			walletId: string;
 			providerId: string;
 			messageId: string;
+			kind: string;
 	  }
 	| { action: "retry"; reason: string; messageId?: string }
 	| {
@@ -107,6 +108,7 @@ export class WagerMessageHandler {
 				walletId: command.walletId,
 				providerId: command.providerId,
 				messageId,
+				kind: command.kind,
 			};
 		} catch (error) {
 			return this.classifyFailure(error, context, messageId);

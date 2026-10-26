@@ -8,6 +8,7 @@ import {
 } from "../domain/wager-transaction";
 import type { Wallet } from "../domain/wallet";
 import { LedgerDirection } from "../domain/wallet-ledger-entry";
+import { Metrics } from "../observability/metrics";
 import { uniqueViolation } from "./db-errors";
 import { IdempotencyConflictError, WalletNotFoundError } from "./errors";
 import type { IntegrationEventProps } from "./events/integration-event";
@@ -87,6 +88,7 @@ export class ProcessWagerTransaction {
 		private readonly clock: () => Date = () => new Date(),
 		private readonly newId: () => string = () => crypto.randomUUID(),
 		private readonly pendingPolicy: PendingReferencePolicy = DEFAULT_PENDING_POLICY,
+		private readonly metrics: Metrics = new Metrics(),
 	) {}
 
 	async execute(
@@ -119,7 +121,8 @@ export class ProcessWagerTransaction {
 				return undefined;
 			}
 			// Lock da wallet e releitura: outro worker pode ter decidido enquanto esperávamos o lock.
-			const wallet = await context.wallets.lockById(
+			const wallet = await this.lockWallet(
+				context,
 				preview.transaction.walletId,
 			);
 			const stored = await context.transactions.findById(transactionId);
@@ -148,7 +151,7 @@ export class ProcessWagerTransaction {
 		payloadHash: string,
 	): Promise<ProcessWagerTransactionResult> {
 		// 1. Lock da wallet: a partir daqui, tudo para esta wallet é serializado.
-		const wallet = await context.wallets.lockById(command.walletId);
+		const wallet = await this.lockWallet(context, command.walletId);
 		if (wallet === undefined) {
 			throw new WalletNotFoundError(command.walletId);
 		}
@@ -230,7 +233,22 @@ export class ProcessWagerTransaction {
 		return this.applyRules(scope);
 	}
 
-	/** Regras de negócio por tipo. Serve tanto para transações novas quanto para as pendentes. */
+	private async lockWallet(
+		context: UnitOfWorkContext,
+		walletId: string,
+	): Promise<Wallet | undefined> {
+		const startedAt = performance.now();
+		const { wallet, contended } =
+			await context.wallets.lockByIdReportingContention(walletId);
+		this.metrics.observe(
+			"wallet_lock_wait_seconds",
+			(performance.now() - startedAt) / 1000,
+		);
+		if (contended) {
+			this.metrics.inc("wallet_lock_conflicts_total");
+		}
+		return wallet;
+	}
 	private async applyRules(
 		scope: Scope,
 	): Promise<ProcessWagerTransactionResult> {
