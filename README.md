@@ -16,7 +16,7 @@ Solução do desafio técnico da Jungle Gaming: um processador distribuído de t
 bun install
 cp .env.example .env
 docker compose up -d          # PostgreSQL 16 + MiniStack (emulador de SQS)
-bun run migrate:up            # aplica as migrations
+bun run migrate:up            # aplica as migrations (obrigatório antes do primeiro dev)
 bun run dev                   # API em http://localhost:3000 + consumidor SQS + publisher da outbox + worker
 ```
 
@@ -48,7 +48,7 @@ As filas são criadas automaticamente na inicialização: `wager-transactions.fi
 | `bun run migrate:down` | reverte a última migration |
 | `bun run migrate:status` | quantas migrations foram executadas e quantas estão pendentes |
 
-Os testes de integração usam um banco separado (`<POSTGRES_DB>_test`, criado automaticamente) e filas com nome único por execução, então não tocam nos dados de desenvolvimento.
+Os testes de integração usam um banco separado (`<POSTGRES_DB>_test`, criado automaticamente, com as migrations aplicadas) e filas com nome único por execução, então não tocam nos dados de desenvolvimento.
 
 ## Variáveis de ambiente
 
@@ -119,6 +119,22 @@ O consumidor lê a fila `wager-transactions.fifo`. Formato da mensagem (o `Messa
 
 Mensagens com erro permanente (JSON inválido, fora do contrato, wallet inexistente etc.) vão para `wager-transactions-dlq.fifo`, com o motivo nos atributos da mensagem. Os eventos de integração (`WagerTransactionProcessed`, `WagerTransactionRejected`, `WagerTransactionPendingReference`, `WalletBalanceChanged`) são publicados em `wager-events.fifo` pela outbox.
 
+## Observabilidade
+
+**Logs:** toda a aplicação loga em JSON (API, consumidor SQS, publisher da outbox, workers e os logs internos do framework), uma linha por evento, com `time`, `level`, `component` e `event`, mais `correlationId`, `messageId`, `transactionId`, `walletId` e `providerId` quando existem. Exemplo de uma requisição:
+
+```json
+{"time":"2026-10-26T15:29:58.901Z","level":"info","component":"http","event":"http_request","correlationId":"demo-123","method":"POST","path":"/wagering/transactions","route":"/wagering/transactions","status":200,"durationMs":23.32}
+```
+
+Corpo, query string e valores monetários não entram no log. `/health/*` e `/metrics` são medidos, mas não geram linha de log.
+
+**Correlação:** todo request recebe um `X-Correlation-Id` (o enviado pelo cliente, ou um novo), devolvido na resposta e presente nos logs.
+
+**Métricas:** `GET /metrics` (formato do Prometheus). A lista completa está na seção 13 do [ARCHITECTURE.md](./ARCHITECTURE.md).
+
+**Health:** `GET /health/live` (processo vivo) e `GET /health/ready` (PostgreSQL e SQS).
+
 ## Estrutura
 
 ```
@@ -127,7 +143,7 @@ src/
   application/     casos de uso, portas, eventos, publisher da outbox, worker de PENDING_REFERENCE
   infrastructure/  PostgreSQL: repositórios SQL, unit of work, consultas, migrations
   messaging/       consumidor SQS, publisher de eventos, ciclo de vida dos workers
-  api/             controllers, validação de entrada, mapeamento de erros, métricas
+  api/             controllers, validação de entrada, mapeamento de erros, middleware de acesso
   observability/   logs JSON, métricas, utilitários
 test/integration/  testes contra PostgreSQL e SQS reais
 ```
@@ -136,8 +152,8 @@ A regra de dependência: `domain` não depende de nada; `application` depende de
 
 ## Testes
 
-- **Unitários** (`src/**/*.test.ts`, 116 testes): `Money`, `Wallet`, ledger, máquina de estados, hash de payload, eventos, validação de entrada e mapeamento de erros.
-- **Integração e concorrência** (`test/integration`, 83 testes): migrations e constraints, atomicidade, idempotência e replay, o cenário das duas apostas de 80 sobre saldo 100, 50 requisições idênticas em paralelo, publishers concorrentes, redelivery, retry com backoff, DLQ, worker morto antes do ack, 3 consumidores simultâneos, reinício do serviço e a API ponta a ponta.
+- **Unitários** (`src/**/*.test.ts`, 119 testes): `Money`, `Wallet`, ledger, máquina de estados, hash de payload, eventos, validação de entrada, mapeamento de erros e filtro de exceções.
+- **Integração e concorrência** (`test/integration`, 94 testes): migrations e constraints, atomicidade, idempotência e replay, o cenário das duas apostas de 80 sobre saldo 100, 50 requisições idênticas em paralelo, conflitos de lock, publishers concorrentes, redelivery, retry com backoff, DLQ, worker morto antes do ack, 3 consumidores simultâneos, reinício do serviço e a API ponta a ponta (incluindo logs e métricas HTTP).
 - A invariante verificada nos testes: o saldo da wallet é igual ao saldo reconstruído pelo ledger.
 
 ## Problemas comuns
@@ -145,5 +161,6 @@ A regra de dependência: `domain` não depende de nada; `application` depende de
 | Sintoma | Causa provável |
 |---|---|
 | `ECONNREFUSED 127.0.0.1:5432` ou `:4566` | O Docker Desktop está fechado ou o Compose não está no ar: `docker compose up -d` |
+| `column "seq" does not exist` ou `column "next_attempt_at" does not exist` nos logs do `dev` | Há migrations pendentes no banco de desenvolvimento: `bun run migrate:up` (confira com `bun run migrate:status`) |
 | `bun test test/integration` diz que não achou arquivos | Use `./test/integration` (já é o que os scripts fazem) |
 | O app não sobe e reclama do SQS | O emulador está fora do ar: suba o Compose ou use `WORKERS_ENABLED=false` |
