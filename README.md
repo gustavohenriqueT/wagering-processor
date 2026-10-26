@@ -40,7 +40,7 @@ Verificação rápida: `curl http://localhost:3000/health/live`
 - [x] NestJS + Bun + TypeScript estrito, health `live`
 - [x] Schema com constraints e migrations reversíveis
 - [x] Domínio: `Money`, `WalletLedgerEntry`, `Wallet`, `WagerTransaction`
-- [ ] Caso de uso central (lock por wallet, idempotência, inbox/outbox)
+- [x] Caso de uso central (lock por wallet, idempotência, inbox/outbox)
 - [ ] API HTTP de negócio
 - [ ] Consumidor SQS
 - [ ] Outbox publisher e worker de `PENDING_REFERENCE`
