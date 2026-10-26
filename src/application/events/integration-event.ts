@@ -13,7 +13,7 @@ export interface IntegrationEventEnvelope<T> {
 	aggregateId: string;
 	correlationId: string;
 	causationId?: string;
-	occurredAt: string; // ISO-8601
+	occurredAt: string;
 	version: number;
 	data: T;
 }
@@ -38,7 +38,6 @@ export abstract class IntegrationEvent<T> {
 		this.data = Object.freeze({ ...props.data });
 	}
 
-	/** Envelope serializado gravado no payload da outbox. */
 	toJSON(): IntegrationEventEnvelope<T> {
 		return {
 			eventId: this.eventId,

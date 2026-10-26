@@ -64,7 +64,6 @@ export function stripComments(
 		return src.slice(from, end === -1 ? n : end).trim() === "";
 	};
 
-	/** Depois de apagar uma linha de comentário, não deixa linhas em branco duplicadas. */
 	const collapseBlankLines = (): void => {
 		const previousIsBlank = out === "" || /(^|\n)[ \t]*\r?\n$/.test(out);
 		if (!previousIsBlank) {
@@ -80,7 +79,6 @@ export function stripComments(
 		}
 	};
 
-	/** Copia o texto de um template literal até o fechamento ou até o próximo `${`. */
 	const copyTemplateText = (): void => {
 		while (i < n) {
 			const c = src[i] as string;

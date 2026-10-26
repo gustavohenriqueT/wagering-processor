@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import type { Money } from "../domain/money";
 import type { WagerTransactionKind } from "../domain/wager-transaction";
 
-/** JSON canônico: chaves ordenadas recursivamente, sem espaços, `undefined` omitido. */
 export function canonicalJson(value: unknown): string {
 	if (value === null || typeof value !== "object") {
 		return JSON.stringify(value);
@@ -28,10 +27,6 @@ export interface PayloadHashInput {
 	referenceExternalTransactionId?: string;
 }
 
-/**
- * SHA-256 (hex) do JSON canônico dos campos de negócio.
- * Ficam de fora: o header Idempotency-Key e metadados de transporte (correlationId etc.).
- */
 export function computePayloadHash(input: PayloadHashInput): string {
 	const canonical = canonicalJson({
 		providerId: input.providerId,

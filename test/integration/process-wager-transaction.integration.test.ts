@@ -133,7 +133,6 @@ async function eventTypes(): Promise<string[]> {
 	return (rows as { event_type: string }[]).map((row) => row.event_type);
 }
 
-/** Invariante central: saldo guardado == soma do ledger. */
 async function expectLedgerMatchesBalance(walletId: string): Promise<void> {
 	const rows = await orm.em.fork().execute(
 		`SELECT w.balance = COALESCE(SUM(CASE WHEN l.direction = 'CREDIT' THEN l.amount ELSE -l.amount END), 0) AS consistent
@@ -197,11 +196,11 @@ describe("regras de negócio", () => {
 		expect(result.status).toBe(WagerTransactionStatus.Rejected);
 		expect(result.failureCode).toBe(FailureCode.InsufficientFunds);
 		expect(await balanceOf(id)).toBe("10.00");
-		expect(await ledgerOf(id)).toHaveLength(1); // só a abertura
+		expect(await ledgerOf(id)).toHaveLength(1);
 		expect(await eventTypes()).toEqual([
 			"WagerTransactionRejected",
 			"WalletBalanceChanged",
-		]); // o 2º é o da abertura
+		]);
 		await expectLedgerMatchesBalance(id);
 	});
 
@@ -254,12 +253,12 @@ describe("idempotência", () => {
 	test("replay idêntico devolve o resultado original, sem novo débito", async () => {
 		const id = await newWallet("100.00");
 		const first = await process.execute(bet(id, "b1", "30.00"));
-		await process.execute(bet(id, "b2", "10.00")); // o saldo muda depois
+		await process.execute(bet(id, "b2", "10.00"));
 		const replay = await process.execute(bet(id, "b1", "30.00"));
 
 		expect(replay.idempotentReplay).toBe(true);
 		expect(replay.transactionId).toBe(first.transactionId);
-		expect(replay.balance.toJSON().amount).toBe("70.00"); // saldo OBSERVADO na época, não o atual (60.00)
+		expect(replay.balance.toJSON().amount).toBe("70.00");
 		expect(await balanceOf(id)).toBe("60.00");
 		expect(await ledgerOf(id)).toHaveLength(3);
 	});
@@ -345,8 +344,8 @@ describe("reversões", () => {
 		await process.execute(bet(id, "b1", "30.00"));
 		await process.execute(
 			reversal(id, "r1", WagerTransactionKind.Refund, "b1"),
-		); // saldo 100
-		await process.execute(bet(id, "b2", "100.00")); // saldo 0
+		);
+		await process.execute(bet(id, "b2", "100.00"));
 		const rollback = await process.execute(
 			reversal(id, "rb1", WagerTransactionKind.Rollback, "r1"),
 		);
@@ -435,7 +434,7 @@ describe("concorrência", () => {
 			),
 		);
 		expect(await balanceOf(id)).toBe("70.00");
-		expect(await versionOf(id)).toBe(31); // 1 (abertura) + 30 movimentações
+		expect(await versionOf(id)).toBe(31);
 		expect(await ledgerOf(id)).toHaveLength(31);
 		await expectLedgerMatchesBalance(id);
 	});

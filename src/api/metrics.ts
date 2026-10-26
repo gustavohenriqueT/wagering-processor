@@ -1,4 +1,3 @@
-/** Contadores em memória no formato de texto do Prometheus. */
 export class Metrics {
 	private readonly counters = new Map<
 		string,

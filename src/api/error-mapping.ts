@@ -7,23 +7,19 @@ export interface ApiError {
 	status: number;
 	code: string;
 	message: string;
-	/** Se reenviar a MESMA requisição (mesma Idempotency-Key) pode dar certo. */
 	retriable: boolean;
 	details?: unknown;
 	retryAfterSeconds?: number;
 }
 
 const DOMAIN_STATUS: Record<string, number> = {
-	// entrada inválida detectada pelo domínio
 	INVALID_MONEY_AMOUNT: 400,
 	INVALID_CURRENCY: 400,
 	INVALID_AMOUNT: 400,
 	INVALID_INITIAL_BALANCE: 400,
 	REFERENCE_REQUIRED: 400,
-	// inexistente
 	WALLET_NOT_FOUND: 404,
 	TRANSACTION_NOT_FOUND: 404,
-	// conflito
 	WALLET_ALREADY_EXISTS: 409,
 	IDEMPOTENCY_CONFLICT: 409,
 };
@@ -32,12 +28,12 @@ const TRANSIENT_CODES = new Set([
 	"ECONNREFUSED",
 	"ECONNRESET",
 	"ETIMEDOUT",
-	"57P01", // admin_shutdown
-	"57P03", // cannot_connect_now
-	"53300", // too_many_connections
-	"40001", // serialization_failure
-	"40P01", // deadlock_detected
-	"55P03", // lock_not_available
+	"57P01",
+	"57P03",
+	"53300",
+	"40001",
+	"40P01",
+	"55P03",
 	"08000",
 	"08001",
 	"08003",

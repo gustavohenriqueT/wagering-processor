@@ -85,7 +85,6 @@ export class WagerTransaction {
 		private _processedAt?: Date,
 	) {}
 
-	/** Nasce em PENDING. Valida a exigência de referência por kind e o valor. */
 	static create(props: CreateWagerTransactionProps): WagerTransaction {
 		const reversal =
 			props.kind === WagerTransactionKind.Refund ||
@@ -126,7 +125,6 @@ export class WagerTransaction {
 		);
 	}
 
-	/** Reconstrução a partir da persistência. Não revalida. */
 	static rehydrate(state: WagerTransactionState): WagerTransaction {
 		return new WagerTransaction(
 			state.id,
@@ -165,7 +163,6 @@ export class WagerTransaction {
 		return this._processedAt;
 	}
 
-	// ---- transições
 	markProcessed(referenceTransactionId: string | undefined, at: Date): void {
 		if (this.requiresReference() && referenceTransactionId === undefined) {
 			throw new DomainError(
@@ -192,7 +189,6 @@ export class WagerTransaction {
 		this._failureCode = code;
 	}
 
-	// ---- consultas de domínio
 	isTerminal(): boolean {
 		return ALLOWED_TRANSITIONS[this._status].length === 0;
 	}
@@ -240,11 +236,6 @@ export class WagerTransaction {
 		}
 	}
 
-	/**
-	 * Aplica as regras 2, 3 e 5 do enunciado sobre uma reversão e sua referência.
-	 * Devolve o código de rejeição, ou undefined se a referência é compatível.
-	 * Não cobre "já foi revertida", que depende de estado do banco.
-	 */
 	checkReference(reference: WagerTransaction): FailureCode | undefined {
 		if (!this.requiresReference()) {
 			return undefined;

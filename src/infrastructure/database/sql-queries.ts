@@ -50,7 +50,6 @@ export class SqlQueries implements QueryPort {
 		if (exists.length === 0) {
 			return undefined;
 		}
-		// Busca limit+1 para saber se existe próxima página sem uma segunda consulta.
 		const rows = await db.query(
 			`SELECT l.seq::text AS seq, l.id, l.transaction_id, l.direction, l.amount, l.balance_before,
               l.balance_after, w.currency, ${iso("l.created_at")} AS created_at

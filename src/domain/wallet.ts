@@ -55,7 +55,6 @@ export class Wallet {
 		);
 	}
 
-	/** Reconstrução a partir da persistência. Não revalida. */
 	static rehydrate(state: WalletState): Wallet {
 		return new Wallet(
 			state.id,
@@ -113,7 +112,6 @@ export class Wallet {
 			);
 		}
 
-		// Cria (e valida) o lançamento ANTES de mutar qualquer estado.
 		const entry = WalletLedgerEntry.create({
 			id: movement.entryId,
 			walletId: this.id,

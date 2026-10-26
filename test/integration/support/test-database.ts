@@ -4,7 +4,6 @@ import config from "../../../src/infrastructure/database/mikro-orm.config";
 
 export const TEST_DATABASE = `${env.postgres.database}_test`;
 
-/** Garante que o banco de teste existe, aplica as migrations e devolve uma conexão. */
 export async function createTestOrm(): Promise<MikroORM> {
 	const admin = await MikroORM.init({ ...config, dbName: "postgres" });
 	try {
@@ -24,7 +23,6 @@ export async function createTestOrm(): Promise<MikroORM> {
 	return orm;
 }
 
-/** Limpa todas as tabelas de negócio entre os testes. */
 export async function truncateAll(orm: MikroORM): Promise<void> {
 	await orm.em.execute(
 		`TRUNCATE TABLE outbox_messages, inbox_messages, wallet_ledger_entries,

@@ -5,7 +5,6 @@ export interface MoneyProps {
 	currency: string;
 }
 
-// até 17 dígitos inteiros (limite de numeric(19,2)) e exatamente 2 casas decimais
 const AMOUNT_PATTERN = /^(\d{1,17})\.(\d{2})$/;
 const CURRENCY_PATTERN = /^[A-Z]{3}$/;
 

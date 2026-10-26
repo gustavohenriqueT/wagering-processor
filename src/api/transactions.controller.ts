@@ -17,7 +17,6 @@ import { Metrics } from "./metrics";
 import { parseSubmitTransaction, parseUuid } from "./parsers";
 import { QUERIES } from "./tokens";
 
-/** PROCESSED -> 200, aceito mas pendente -> 202, rejeição de negócio -> 422. */
 const STATUS_BY_RESULT: Record<WagerTransactionStatus, number> = {
 	[WagerTransactionStatus.Processed]: 200,
 	[WagerTransactionStatus.PendingReference]: 202,

@@ -5,7 +5,6 @@ export interface FieldIssue {
 	message: string;
 }
 
-/** Payload ou parâmetro inválido (HTTP 400). */
 export class ValidationError extends DomainError {
 	constructor(public readonly issues: FieldIssue[]) {
 		super("VALIDATION_ERROR", "requisição inválida");

@@ -22,7 +22,6 @@ import { HealthService } from "./health/health.service";
 import { SqlQueries } from "./infrastructure/database/sql-queries";
 import { SqlUnitOfWork } from "./infrastructure/database/sql-unit-of-work";
 
-/** Fecha o pool de conexões quando o Nest recebe SIGTERM/SIGINT (enableShutdownHooks). */
 @Injectable()
 class OrmShutdown implements OnApplicationShutdown {
 	constructor(@Inject(ORM) private readonly orm: MikroORM) {}
@@ -36,7 +35,6 @@ type OrmOptions = Parameters<typeof MikroORM.init>[0];
 
 @Module({})
 export class AppModule {
-	/** As opções do ORM entram de fora: a mesma aplicação roda em produção e contra o banco de testes. */
 	static forRoot(ormOptions: OrmOptions): DynamicModule {
 		return {
 			module: AppModule,

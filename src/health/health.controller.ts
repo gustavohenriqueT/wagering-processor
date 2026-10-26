@@ -10,13 +10,11 @@ export class HealthController {
     @Inject(ReadinessService) private readonly readiness: ReadinessService,
   ) {}
 
-  /** Processo vivo. Não toca em nenhuma dependência. */
   @Get('live')
   live() {
     return this.health.live();
   }
 
-  /** Dependências alcançáveis. 503 quando alguma está fora, para o orquestrador tirar a instância do ar. */
   @Get('ready')
   async ready(@Res({ passthrough: true }) response: HttpResponse) {
     const report = await this.readiness.check();

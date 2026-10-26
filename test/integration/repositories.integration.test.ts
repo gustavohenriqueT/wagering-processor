@@ -231,7 +231,7 @@ describe("lock por wallet (FOR UPDATE)", () => {
 		const first = uow.run(async ({ wallets }) => {
 			const wallet = await wallets.lockById(id);
 			if (wallet === undefined) throw new Error("wallet sumiu");
-			await sleep(400); // segura o lock
+			await sleep(400);
 			wallet.debit({
 				money: brl("80.00"),
 				entryId: crypto.randomUUID(),
@@ -241,9 +241,9 @@ describe("lock por wallet (FOR UPDATE)", () => {
 			await wallets.save(wallet, 1);
 		});
 
-		await sleep(100); // garante que a primeira já pegou o lock
+		await sleep(100);
 		const second = uow.run(async ({ wallets }) => {
-			const wallet = await wallets.lockById(id); // bloqueia até a primeira commitar
+			const wallet = await wallets.lockById(id);
 			secondSaw = wallet?.balance.toJSON().amount;
 		});
 
@@ -302,7 +302,7 @@ describe("SqlOutboxRepository", () => {
 
 	test("grava o envelope como jsonb, pendente de publicação", async () => {
 		const walletId = await seedWallet();
-		const event = balanceChanged(walletId, "a?b:c"); // caracteres que costumam quebrar placeholders
+		const event = balanceChanged(walletId, "a?b:c");
 		await uow.run(({ outbox }) => outbox.add(event));
 
 		const rows = await orm.em.fork().execute(

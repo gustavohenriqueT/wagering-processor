@@ -17,7 +17,6 @@ interface WagerTransactionRefs {
 }
 
 export interface WagerTransactionProcessedData extends WagerTransactionRefs {
-	/** Saldo da wallet após a transação (igual ao anterior quando não há efeito, como em LOSS). */
 	balance: MoneyProps;
 }
 

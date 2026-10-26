@@ -1,4 +1,3 @@
-/** Se o erro é uma violação de unicidade do Postgres (23505), devolve o nome da constraint. */
 export function uniqueViolation(
 	error: unknown,
 ): { constraint: string | undefined } | undefined {

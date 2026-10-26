@@ -210,7 +210,6 @@ export function parseSubmitTransaction(
 	};
 }
 
-/** O cursor é opaco para o cliente: base64url de `{"s":"<seq>"}`. */
 export function encodeCursor(seq: string): string {
 	return Buffer.from(JSON.stringify({ s: seq })).toString("base64url");
 }
@@ -228,7 +227,6 @@ export function decodeCursor(cursor: string | undefined): string | undefined {
 			return seq;
 		}
 	} catch {
-		// cai no erro abaixo
 	}
 	throw new ValidationError([{ field: "cursor", message: "cursor inválido" }]);
 }

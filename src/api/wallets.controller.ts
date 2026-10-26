@@ -112,7 +112,6 @@ export class WalletsController {
     }
     this.metrics.inc('reconciliations_total', { consistent: String(result.consistent) });
     if (!result.consistent) {
-      // Divergência: nunca corrigida em silêncio. Vira log, métrica e sinal na resposta.
       this.metrics.inc('reconciliation_divergences_total');
       this.logger.warn(
         JSON.stringify({

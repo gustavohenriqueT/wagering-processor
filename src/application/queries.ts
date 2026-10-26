@@ -20,7 +20,6 @@ export interface LedgerEntryView {
 
 export interface LedgerPage {
 	entries: LedgerEntryView[];
-	/** Cursor opaco para a próxima página; ausente na última. */
 	nextCursor?: string;
 }
 
@@ -37,7 +36,6 @@ export interface TransactionView {
 	referenceExternalTransactionId?: string;
 	status: string;
 	failureCode?: string;
-	/** Saldo observado quando a transação foi decidida. */
 	balance?: MoneyProps;
 	createdAt: string;
 	processedAt?: string;
@@ -52,10 +50,8 @@ export interface ReconciliationView {
 	checkedEntries: number;
 }
 
-/** Lado de leitura (consultas). Todas devolvem `undefined` quando a wallet/transação não existe. */
 export interface QueryPort {
 	findWallet(walletId: string): Promise<WalletView | undefined>;
-	/** `cursor` é o valor opaco já decodificado (último `seq` visto). */
 	listLedger(
 		walletId: string,
 		afterSeq: string | undefined,
