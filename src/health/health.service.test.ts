@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { HealthService } from "../src/health/health.service";
+import { HealthService } from "./health.service";
 
 describe("HealthService", () => {
 	test("live retorna status ok", () => {
