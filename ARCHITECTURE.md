@@ -1,89 +1,99 @@
 # Decisões de arquitetura
 
-Este documento registra as decisões do projeto, o motivo de cada uma e o que foi sacrificado em troca (trade-offs). Ele é atualizado no mesmo dia em que cada decisão é tomada.
+Rascunho consolidado. Cada decisão: o que escolhi, por quê e o que abri mão (trade-off).
+Reescreva com suas palavras: na apresentação, quem explica é você.
 
 ## Registro de decisões
 
 ### D1. Repositório próprio e privado, sem fork
-
-- **Escolha:** criar um repositório novo, privado, em vez de fazer fork do repositório do desafio.
-- **Por quê:** o repositório do desafio é público e já tem dezenas de forks. Um fork de repositório público é sempre público, então a solução ficaria visível para outros candidatos. O enunciado é guardado em `CHALLENGE.md`.
-- **Trade-off:** o avaliador precisa receber acesso (colaborador) ou a visibilidade precisa ser aberta na hora da entrega.
+- **Escolha:** repositório novo e privado em vez de fork. O enunciado fica em `CHALLENGE.md`.
+- **Por quê:** o repositório do desafio é público e tem dezenas de forks; fork de repo público é sempre público, expondo a solução.
+- **Trade-off:** o avaliador precisa receber acesso (colaborador) ou a visibilidade precisa ser aberta na entrega.
 
 ### D2. MiniStack como emulador de SQS
-
-- **Escolha:** usar o MiniStack (`ministackorg/ministack`) como emulador local de SQS, no lugar do LocalStack.
-- **Por quê:** desde março de 2026 a imagem do LocalStack exige conta e auth token para iniciar. O MiniStack é open source, não exige conta nem token e usa a mesma porta (4566). O enunciado aceita LocalStack ou MiniStack.
-- **Trade-off:** o LocalStack é mais completo e mais antigo. O MiniStack é mais novo, então o comportamento de algumas funcionalidades pode divergir da AWS real. Os testes de integração são o que protege contra isso.
+- **Escolha:** `ministackorg/ministack` no lugar do LocalStack.
+- **Por quê:** desde março de 2026 a imagem do LocalStack exige conta e auth token. O MiniStack é open source, usa a porta 4566 e o enunciado aceita os dois.
+- **Trade-off:** é mais novo; o comportamento de algumas features pode divergir da AWS real. Os testes de integração protegem contra isso.
 
 ### D3. PostgreSQL 16 em container, versão fixa
-
-- **Escolha:** `postgres:16-alpine`, com volume nomeado para persistência e healthcheck com `pg_isready`.
-- **Por quê:** versão fixa dá reprodutibilidade (o avaliador roda o mesmo que eu). O healthcheck garante que os serviços dependentes só iniciem quando o banco aceita conexões.
-- **Trade-off:** a variante `alpine` é menor, mas usa musl em vez de glibc. Para este projeto isso não tem impacto prático.
+- **Escolha:** `postgres:16-alpine`, volume nomeado e healthcheck com `pg_isready`.
+- **Por quê:** reprodutibilidade; os serviços dependentes só iniciam com o banco aceitando conexões.
 
 ### D4. Imagem do emulador fixada por digest
+- **Escolha:** referenciar o MiniStack por `@sha256:...` em vez de `latest`.
+- **Por quê:** `latest` muda com o tempo; o digest identifica a imagem contra a qual os testes rodaram.
+- **A fazer:** preencher o digest no `docker-compose.yml` (`docker inspect --format '{{index .RepoDigests 0}}' ministackorg/ministack:latest`).
 
-- **Escolha:** referenciar a imagem do MiniStack pelo digest (`@sha256:...`) em vez de `latest`.
-- **Por quê:** `latest` muda com o tempo. O digest identifica exatamente a imagem contra a qual os testes foram feitos.
-- **Trade-off:** atualizações precisam ser feitas manualmente, o que é aceitável para um projeto de avaliação.
+### D5. Injeção de dependência do NestJS no Bun
+- **Observado:** no Bun 1.4.4, a injeção implícita (sem `@Inject`) funcionou no caso simples testado.
+- **Escolha:** usar injeção implícita para classes; usar `@Inject(token)` explícito onde o Nest exigir (tokens, interfaces).
+- **Risco conhecido:** há relatos de o Bun não aplicar `emitDecoratorMetadata` em alguns cenários. Se a DI falhar em casos mais complexos, passar a usar `@Inject` explícito.
+
+### D6. MikroORM com entidades sem decorators
+- **Escolha:** MikroORM (v7) com entidades definidas por arquivos de schema, sem decorators; classes de domínio independentes da persistência.
+- **Por quê:** domínio puro (construtor privado e `rehydrate`), menor dependência de metadados no Bun, e separação clara entre domínio, persistência e migrations.
+- **Trade-off:** mais verboso que decorators e há código de mapeamento entre domínio e schema.
+- **Alternativas:** MikroORM com decorators (reintroduz a dependência de metadados) e TypeORM (exigiria tipo explícito por coluna no Bun).
+
+### D7. Migrations escritas em SQL
+- **Escolha:** migrations à mão, em SQL, executadas pelo migrator do MikroORM (`up` e `down`), via `scripts/migrate.ts`.
+- **Por quê:** unicidade, imutabilidade e não-negatividade precisam estar no banco; triggers, índices parciais e `CHECK`s aritméticos não são bem expressos por geração automática.
+- **Reversibilidade:** o `down()` do MikroORM lança erro por padrão, então cada migration implementa o seu. Verificado: `up`, `down`, `up`. Cada migration roda em transação.
+- **Trade-off:** SQL mantido manualmente; o schema pode divergir do mapeamento das entidades. Os testes de integração contra Postgres real protegem.
+
+### D8. Interpretação: uma referência só pode ser revertida uma vez
+- **Contexto:** a regra 4 diz "não pode ser revertida duas vezes pelo mesmo tipo"; a tabela diz que `REFUND` e `ROLLBACK` revertem "uma única vez".
+- **Interpretação:** uma transação de referência só pode ter **uma** reversão efetivada (`PROCESSED`), seja `REFUND` ou `ROLLBACK`.
+- **Motivo:** permitir `REFUND` e `ROLLBACK` sobre a mesma `BET` creditaria o jogador duas vezes.
+- **No banco:** índice único parcial `uq_one_processed_reversal` em `wager_transactions (reference_transaction_id) WHERE status = 'PROCESSED' AND kind IN ('REFUND','ROLLBACK')`. Só conta `PROCESSED`, para uma tentativa rejeitada não bloquear a correta.
+- **No código:** a violação `23505` deve virar `REJECTED` com `failureCode` próprio, não erro 500.
+- **A responder:** por que o `ROLLBACK` de um `REFUND` continua permitido? (qual `reference_transaction_id` ele carrega?)
+
+### D9. `Money` em centavos (`bigint`)
+- **Escolha:** inteiro de centavos em `bigint`, sem biblioteca de decimais.
+- **Por quê:** aritmética exata (0.10 + 0.20 = 0.30), sem dependência, escala 2 natural. Limite de 17 dígitos inteiros acompanha `numeric(19,2)`.
+- **Trade-off:** assume 2 casas para toda moeda (JPY, BHD exigiriam escala por moeda). `Money.from(m.toJSON())` falha para negativos de propósito (negativos são rejeitados em contratos de entrada, mas `subtract`/`negate` podem produzi-los internamente).
+
+### D10. Interpretação: `amount` exige exatamente duas casas decimais
+- **Contexto:** o enunciado diz "sempre com escala fixa de 2 casas", mas lista só "mais de 2 casas" entre as inválidas.
+- **Interpretação:** exatamente duas casas. `"25"` e `"25.5"` são rejeitados.
+- **Motivo:** leitura literal; evita corrigir em silêncio dados inconsistentes de um provedor.
+- **Trade-off:** um provedor que envie `"25"` terá a requisição rejeitada.
+
+### D11. `Money.equals` entre moedas diferentes devolve `false`
+- `equals` é uma comparação (existe a resposta "não são iguais"). `add`, `subtract` e `isLessThan` entre moedas diferentes lançam `DomainError` (`CURRENCY_MISMATCH`), porque calcular sem câmbio não tem resultado correto.
+
+### D12. Correção do schema: referência opcional fora das reversões
+- O enunciado diz que `WIN` pode referenciar a `BET` da rodada. A constraint inicial `ck_reference_required` proibia referência em qualquer tipo que não fosse reversão.
+- Corrigido pela migration `Migration20261025000100`: reversões exigem referência; os demais tipos podem ter.
+
+### D13. O domínio não gera ids nem datas
+- `id` e `createdAt`/`at` entram por parâmetro; o relógio e o gerador de ids ficam na borda. Torna os testes determinísticos.
+- `rehydrate` não revalida: reconstrói o que veio do banco, e `isBalanced()` permite detectar dados corrompidos na reconciliação em vez de falhar ao ler.
+- `WalletLedgerEntry` é imutável por tipo (`readonly`) e em tempo de execução (`Object.freeze`).
+
+### D14. `Wallet`: validar tudo antes de mutar
+- `debit`/`credit` devolvem o `WalletLedgerEntry`: não há como mudar o saldo sem receber o registro de auditoria.
+- A ordem é validar, calcular, criar o lançamento (que valida) e só então atribuir os campos.
+- `open` recebe `now` e **não** cria o lançamento de abertura: este é criado pelo caso de uso, junto com a transação `OPENING`, na mesma transação SQL. `version` nasce em 1.
+- Saldo insuficiente lança `INSUFFICIENT_FUNDS`; o caso de uso traduz para `failureCode` distinto conforme o contexto (aposta sem saldo vs. reversão que deixaria saldo negativo).
+- Valor zero é rejeitado (`INVALID_MOVEMENT_AMOUNT`): `version` só muda quando o saldo muda.
+
+### D15. `WagerTransaction`: transições em tabela
+- Transições válidas: `PENDING -> PENDING_REFERENCE | PROCESSED | REJECTED | FAILED`; `PENDING_REFERENCE -> PROCESSED | REJECTED | FAILED`. `PROCESSED`, `REJECTED` e `FAILED` são terminais.
+- `PENDING_REFERENCE -> PENDING_REFERENCE` não é transição: se a referência continua ausente, o worker só atualiza tentativas e agenda a próxima.
+- Transição inválida lança `InvalidTransactionStateError` (erro de programação, não caminho de negócio).
+- `reject` e `fail` não definem `processedAt` (consistente com `ck_processed_at`).
+- `checkReference(reference)` devolve o `FailureCode` ou `undefined`. Ordem das checagens: tipo da referência, contexto (provider, player, wallet, rodada, moeda), status `PROCESSED`, valor igual. A regra "já revertida" depende do banco e fica no caso de uso, sustentada por `uq_one_processed_reversal`.
 
 ## Decisões pendentes (exigidas pelo enunciado)
 
-Cada item abaixo deve virar uma decisão registrada acima, no mesmo dia em que for tomada. Itens ainda sem decisão devem ficar marcados como pendentes.
-
-- [ ] ORM escolhido (MikroORM ou TypeORM) e como o `Money` é mapeado para o banco
 - [ ] Estratégia de concorrência (lock pessimista, otimista ou update atômico) e justificativa
-- [ ] Transições de estado válidas de `WagerTransaction`
 - [ ] Algoritmo do `payloadHash` e forma do JSON canônico
-- [ ] Taxonomia de `failureCode`
+- [ ] Taxonomia final de `failureCode`, com a ação esperada do provedor para cada código
 - [ ] Mapeamento de status HTTP
 - [ ] Limite ou TTL de `PENDING_REFERENCE` e política de backoff
 - [ ] Decisão sobre autenticação
-- [ ] Interpretações adicionais do enunciado
+- [ ] Decisão sobre `TRUNCATE` no ledger (trigger atual cobre só `UPDATE`/`DELETE`)
 
 ## Limitações conhecidas
-
-### Dx. Interpretação: uma referência só pode ser revertida uma vez
-
-- **Contexto:** a regra 4 do enunciado diz que uma referência não pode ser revertida duas vezes "pelo mesmo tipo de operação". A tabela da seção 7 diz que `REFUND` e `ROLLBACK` revertem "uma única vez".
-- **Interpretação adotada:** uma transação de referência só pode ter **uma** reversão efetivada (`PROCESSED`), seja `REFUND` ou `ROLLBACK`.
-- **Motivo:** permitir um `REFUND` e também um `ROLLBACK` sobre a mesma `BET` creditaria o jogador duas vezes.
-- **Como o banco garante:** índice único parcial em `wager_transactions (reference_transaction_id) WHERE status = 'PROCESSED' AND kind IN ('REFUND','ROLLBACK')`. Só conta o status `PROCESSED`, para que uma tentativa rejeitada (por exemplo, com valor diferente) não bloqueie a tentativa correta que vier depois.
-- **Consequência no código:** a violação de unicidade (código `23505` do Postgres) deve ser capturada e convertida em `REJECTED` com um `failureCode` próprio, e não virar erro 500.
-- **Trade-off:** é uma leitura mais estrita que a regra 4 isolada. Se o provedor precisar de `REFUND` e `ROLLBACK` sobre a mesma aposta, essa regra terá que ser revista.
-
-### Dx. MikroORM com entidades sem decorators
-
-- **Escolha:** usar o MikroORM (v7) com entidades definidas por arquivos de schema, **sem decorators**, mantendo as classes de domínio independentes da camada de persistência.
-- **Por quê:**
-  - **Domínio puro:** o enunciado exige classes de domínio com construtor privado e método `rehydrate`. Prefiro que elas representem apenas regras de negócio, sem depender de biblioteca de banco de dados. O mapeamento entre domínio e persistência fica em arquivos de schema separados.
-  - **Compatibilidade com Bun:** o Bun apenas transpila TypeScript e há relatos de que nem sempre aplica o `emitDecoratorMetadata`. Na injeção de dependência do NestJS, o caso simples funcionou no Bun 1.4.4 nos meus testes, mas evito depender desse mecanismo também na camada de persistência.
-  - **Manutenção:** separação clara entre domínio, persistência e migrations, o que deixa o código mais testável e previsível.
-- **Trade-off:** definir cada entidade em um arquivo de schema é mais verboso do que anotar a classe com decorators. Também há mais código de mapeamento entre o domínio e o schema.
-- **Alternativas consideradas:** MikroORM com decorators (reintroduz a dependência de metadados no Bun) e TypeORM (no Bun exigiria declarar o tipo de cada coluna explicitamente, e o MikroORM é o ORM preferencial do enunciado).
-
-### Dy. Migrations escritas em SQL
-
-- **Escolha:** escrever as migrations à mão, em SQL, executadas pelo migrator do MikroORM (`up` e `down`), e não geradas por diferença de schema.
-- **Por quê:** o enunciado exige que unicidade, imutabilidade e não-negatividade estejam no schema do banco. Triggers, índices únicos parciais e `CHECK`s com aritmética não são bem expressos por geração automática. O SQL explícito dá controle total sobre essas garantias e deixa o schema revisável.
-- **Reversibilidade:** o `down()` do MikroORM lança erro por padrão, então cada migration implementa o próprio `down()`, desfazendo as mudanças na ordem inversa das dependências. A reversibilidade foi verificada subindo, descendo e subindo de novo. Cada migration roda dentro de uma transação.
-- **Trade-off:** o SQL é escrito e mantido manualmente, e o schema pode divergir do mapeamento das entidades se uma das partes for alterada sem a outra. Os testes de integração contra um Postgres real servem de proteção contra isso.
-
-### Dx. Representação interna do `Money`: centavos em `bigint`
-
-- **Escolha:** guardar o valor como inteiro de centavos (`bigint`), em vez de usar uma biblioteca de decimais.
-- **Por quê:** a aritmética com inteiros é exata (0.10 + 0.20 resulta em 0.30) e não exige dependência. A escala fixa de 2 casas do enunciado encaixa naturalmente. O limite de 17 dígitos inteiros acompanha a coluna `numeric(19,2)`, para que um valor inválido seja rejeitado pelo domínio e não estoure no banco.
-- **Trade-off:** o modelo assume 2 casas decimais para toda moeda. Moedas com 0 ou 3 casas (JPY, BHD) exigiriam escala por moeda. `Money.from(m.toJSON())` falha para valores negativos de propósito, porque negativos são rejeitados em contratos de entrada, embora `subtract` e `negate` possam produzir negativos internamente.
-
-### Dy. Interpretação: `amount` exige exatamente duas casas decimais
-
-- **Contexto:** o enunciado diz que `amount` é recebido "sempre com escala fixa de 2 casas", mas lista só "mais de 2 casas" entre as entradas inválidas.
-- **Interpretação adotada:** a entrada exige exatamente duas casas. `"25"` e `"25.5"` são rejeitados, e `"25.00"` é aceito.
-- **Motivo:** segue a leitura literal da escala fixa e evita corrigir em silêncio dados financeiros inconsistentes de um provedor.
-- **Trade-off:** um provedor que envie `"25"` terá a requisição rejeitada, em vez de tolerada.
-
-### Dz. Interpretação: `equals` entre moedas diferentes devolve `false`
-
-- **Escolha:** `Money.equals` devolve `false` quando as moedas diferem. `add`, `subtract` e `isLessThan` entre moedas diferentes lançam `DomainError` com código `CURRENCY_MISMATCH`.
-- **Motivo:** `equals` é uma comparação (a resposta "não são iguais" existe), enquanto as demais são operações que calculam, e calcular entre moedas sem câmbio não tem resultado correto.
