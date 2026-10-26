@@ -77,12 +77,25 @@ function spawnWorker(workerId: string): ReturnType<typeof Bun.spawn> {
 			WORKER_DB_NAME: TEST_DATABASE,
 			WORKER_QUEUE_URL: urls.transactions,
 			WORKER_DLQ_URL: urls.transactionsDlq,
+			WORKER_DELAY_MS: "60",
 		},
 		stdout: "ignore",
 		stderr: "inherit",
 	});
 	running.push(worker);
 	return worker;
+}
+
+async function waitForWorkersReady(count: number): Promise<void> {
+	await waitFor(
+		async () =>
+			(
+				await one(
+					"SELECT count(*)::int AS n FROM test_worker_marks WHERE message_id = '__ready__'",
+				)
+			).n === count,
+		{ timeoutMs: 60_000, intervalMs: 200 },
+	);
 }
 
 async function seedWorkload(): Promise<string[]> {
@@ -156,7 +169,7 @@ async function expectExactlyOnceEffects(wallets: string[]): Promise<void> {
 	expect(
 		(
 			await one(
-				"SELECT count(DISTINCT message_id)::int AS n FROM test_worker_marks",
+				"SELECT count(DISTINCT message_id)::int AS n FROM test_worker_marks WHERE message_id <> '__ready__'",
 			)
 		).n,
 	).toBe(TOTAL);
@@ -176,8 +189,9 @@ async function expectExactlyOnceEffects(wallets: string[]): Promise<void> {
 
 describe("múltiplos PROCESSOS de verdade sobre o mesmo banco e a mesma fila", () => {
 	test("3 processos consomem em paralelo: cada mensagem tem efeito único e o trabalho é dividido", async () => {
-		const wallets = await seedWorkload();
 		const workers = [spawnWorker("w1"), spawnWorker("w2"), spawnWorker("w3")];
+		await waitForWorkersReady(3);
+		const wallets = await seedWorkload();
 
 		await waitFor(async () => (await processedCount()) === TOTAL, {
 			timeoutMs: 90_000,
@@ -189,16 +203,17 @@ describe("múltiplos PROCESSOS de verdade sobre o mesmo banco e a mesma fila", (
 		const distribution = (await orm.em
 			.fork()
 			.execute(
-				"SELECT worker_id, count(*)::int AS n FROM test_worker_marks GROUP BY worker_id",
+				"SELECT worker_id, count(*)::int AS n FROM test_worker_marks WHERE message_id <> '__ready__' GROUP BY worker_id",
 			)) as { worker_id: string; n: number }[];
 		expect(distribution.length).toBeGreaterThanOrEqual(2);
 	});
 
 	test("um processo é morto com SIGKILL no meio do trabalho, outro o substitui, e nada se perde nem duplica", async () => {
-		const wallets = await seedWorkload();
 		const victim = spawnWorker("w1");
 		spawnWorker("w2");
 		spawnWorker("w3");
+		await waitForWorkersReady(3);
+		const wallets = await seedWorkload();
 
 		await waitFor(async () => (await processedCount()) >= 10, {
 			timeoutMs: 60_000,

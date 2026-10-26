@@ -29,8 +29,13 @@ const sqs = new SQSClient({
 const useCase = new ProcessWagerTransaction(new SqlUnitOfWork(orm));
 const realHandler = new WagerMessageHandler(useCase);
 
+const delayMs = Number(process.env.WORKER_DELAY_MS ?? 0);
+
 const handler = {
 	handle: async (...args: Parameters<WagerMessageHandler["handle"]>) => {
+		if (delayMs > 0) {
+			await new Promise((resolve) => setTimeout(resolve, delayMs));
+		}
 		const outcome = await realHandler.handle(...args);
 		if (outcome.action === "ack") {
 			await orm.em
@@ -59,6 +64,13 @@ const consumer = new SqsConsumer(
 	new Metrics(),
 );
 consumer.start(1);
+
+await orm.em
+	.fork()
+	.execute(
+		"INSERT INTO test_worker_marks (worker_id, message_id) VALUES (?, ?)",
+		[workerId, "__ready__"],
+	);
 
 async function shutdown(): Promise<void> {
 	await consumer.stop();
