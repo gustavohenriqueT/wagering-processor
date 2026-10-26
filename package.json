@@ -9,20 +9,19 @@
     "migrate:up": "bun scripts/migrate.ts up",
     "migrate:down": "bun scripts/migrate.ts down",
     "migrate:status": "bun scripts/migrate.ts status"
-    
   },
   "dependencies": {
     "@mikro-orm/core": "^7.2.5",
     "@mikro-orm/migrations": "^7.2.5",
     "@mikro-orm/postgresql": "^7.2.5",
-    "@nestjs/common": "^X.Y.Z",
-    "@nestjs/core": "^X.Y.Z",
-    "@nestjs/platform-express": "^X.Y.Z",
-    "reflect-metadata": "^X.Y.Z",
-    "rxjs": "^X.Y.Z"
+    "@nestjs/common": "^12.2.0",
+    "@nestjs/core": "^12.2.0",
+    "@nestjs/platform-express": "^12.2.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
   },
   "devDependencies": {
     "@types/bun": "^1.4.4",
-    "typescript": "^X.Y.Z"
+    "typescript": "^7.0.2"
   }
 }

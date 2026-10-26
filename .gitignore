@@ -4,4 +4,4 @@ coverage/
 .env
 .DS_Store
 *.log
-.vscode/
+.vscode
